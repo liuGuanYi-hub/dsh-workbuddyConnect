@@ -8,8 +8,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
-import { WORKBUDDY_AI_PROBE_PATH, WORKBUDDY_AI_STATUS_PATH, WORKBUDDY_PROBE_PATH, WORKBUDDY_STATUS_PATH, isWorkBuddySignedOutReasonCode } from '../status-paths.ts'
-import type { WorkBuddyWebCreditExpiry } from '../status-paths.ts'
+import { WORKBUDDY_ACCOUNTS_PATH, WORKBUDDY_AI_ACCOUNTS_PATH, WORKBUDDY_AI_PROBE_PATH, WORKBUDDY_AI_STATUS_PATH, WORKBUDDY_PROBE_PATH, WORKBUDDY_STATUS_PATH, isWorkBuddySignedOutReasonCode } from '../status-paths.ts'
+import type { WorkBuddyAccountsAction, WorkBuddyWebAccount, WorkBuddyWebAccountsSection, WorkBuddyWebCreditExpiry } from '../status-paths.ts'
 import type { WorkBuddySignedOutReasonCode, WorkBuddyWebModelBadge, WorkBuddyWebProbeSection, WorkBuddyWebStatus, WorkBuddyWebVisibilitySection } from '../status-paths.ts'
 import { isWorkBuddyWebStatus } from './status-document.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
@@ -38,6 +38,8 @@ export interface WorkBuddyCardVariant {
   signedOutKey: WorkBuddySettingsKey
   statusPath: string
   probePath: string
+  /** Route accepting account capture/switch/remove/rename writes. */
+  accountsPath: string
   /**
    * The product's own name, used verbatim inside the Agent prompt. Taken from
    * the variant rather than derived from a reason code: the two products fail
@@ -62,6 +64,7 @@ export const CN_CARD_VARIANT: WorkBuddyCardVariant = {
   signedOutKey: 'signedOutHint',
   statusPath: WORKBUDDY_STATUS_PATH,
   probePath: WORKBUDDY_PROBE_PATH,
+  accountsPath: WORKBUDDY_ACCOUNTS_PATH,
   appName: 'WorkBuddy',
   unavailableKey: 'assistUnavailableCN',
   creditPrefix: 'WB.',
@@ -75,6 +78,7 @@ export const AI_CARD_VARIANT: WorkBuddyCardVariant = {
   signedOutKey: 'signedOutHintAI',
   statusPath: WORKBUDDY_AI_STATUS_PATH,
   probePath: WORKBUDDY_AI_PROBE_PATH,
+  accountsPath: WORKBUDDY_AI_ACCOUNTS_PATH,
   appName: 'WorkBuddy AI',
   unavailableKey: 'assistUnavailableAI',
   creditPrefix: 'WB AI.',
@@ -333,6 +337,45 @@ const tabActiveStyle: CSSProperties = {
   fontWeight: 600,
 }
 const tabPanelStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 18, paddingTop: 16 }
+
+/** The parked-account list: one row per account, no bullets. */
+const accountListStyle: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 8,
+  margin: 0,
+  padding: 0,
+  listStyle: 'none',
+}
+const accountRowStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  fontSize: 13,
+  lineHeight: '20px',
+}
+const accountNameStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  flex: '1 1 auto',
+  minWidth: 0,
+  color: 'var(--dsw-alias-label-primary)',
+}
+const accountTagStyle: CSSProperties = {
+  fontSize: 11,
+  lineHeight: '16px',
+  padding: '0 6px',
+  borderRadius: 4,
+  color: 'var(--dsw-alias-label-secondary)',
+  background: 'var(--dsw-alias-fill-secondary, rgba(127, 127, 127, 0.12))',
+}
+const accountActionsStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  flex: '0 0 auto',
+}
 
 /**
  * Primary action of the inline confirmation. Fill and text colour come from the
@@ -842,6 +885,117 @@ function ProbeSection({ probe, models, t, onDetect, onClear, busy }: {
 }
 
 /** Render WorkBuddy sign-in state and credit as one expandable card. */
+/**
+ * Parked accounts and the controls that switch between them.
+ *
+ * The desktop app holds one session at a time, so this is where several are
+ * kept. Capture archives whatever the app is signed into right now; switch
+ * moves which parked account the plugin serves; remove unparks. Nothing here
+ * signs the desktop app out or writes its auth file, and the remove control
+ * says so, because "remove account" could otherwise be read as "sign out".
+ *
+ * Rendered only when the status document carries an account section, so a host
+ * without an account store shows no controls rather than dead ones.
+ */
+function AccountSection({ section, busyId, onCapture, onUse, onRemove, t }: {
+  section: WorkBuddyWebAccountsSection
+  /** The account id (or `capture`) with a write in flight, if any. */
+  busyId: string | undefined
+  onCapture: () => void
+  onUse: (id: string) => void
+  onRemove: (id: string) => void
+  t: WorkBuddyPluginCardInjected['t']
+}): React.ReactNode {
+  const anyBusy = busyId !== undefined
+  const nameOf = (account: WorkBuddyWebAccount): string =>
+    account.label ?? account.nickname ?? t('accountsUnknownName')
+
+  return (
+    <div style={quotaGroupStyle}>
+      <div style={quotaLabelStyle}>
+        <span>{t('accountsHeading')}</span>
+        <span>{section.accounts.length > 0 ? String(section.accounts.length) : ''}</span>
+      </div>
+      <p style={bodyStyle}>{t('accountsIntro')}</p>
+      {section.accounts.length === 0
+        ? <p style={bodyStyle}>{t('accountsEmpty')}</p>
+        : (
+          <ul style={accountListStyle}>
+            {section.accounts.map(account => (
+              <li key={account.id} style={accountRowStyle}>
+                <span style={dotStyle(account.active ? 'signed-in' : 'signed-out')} aria-hidden />
+                <span style={accountNameStyle}>
+                  {nameOf(account)}
+                  {account.active ? <span style={accountTagStyle}>{t('accountsActive')}</span> : null}
+                  {account.expired ? <span style={accountTagStyle}>{t('accountsExpired')}</span> : null}
+                </span>
+                <span style={accountActionsStyle}>
+                  {account.active
+                    ? null
+                    : (
+                      <button
+                        type="button"
+                        style={buttonStyle}
+                        disabled={anyBusy}
+                        onClick={() => { onUse(account.id) }}
+                      >
+                        {busyId === account.id ? t('accountsUsing') : t('accountsUse')}
+                      </button>
+                    )}
+                  <button
+                    type="button"
+                    style={buttonStyle}
+                    disabled={anyBusy}
+                    /*
+                     * Confirmed because the action is destructive to stored
+                     * state, and because the wording has to make clear the
+                     * desktop app's own sign-in survives it — the opposite
+                     * reading ("remove" = sign out) is the damaging one.
+                     */
+                    onClick={() => {
+                      // `typeof` rather than a bare reference: this runs inside
+                      // a click handler, and in a seat without a global
+                      // `window` (a test renderer, a non-browser host) the bare
+                      // form throws where `typeof` is simply "undefined".
+                      const confirmFn = typeof globalThis.window === 'undefined'
+                        ? undefined
+                        : globalThis.window.confirm
+                      if (confirmFn === undefined || confirmFn(t('accountsRemoveConfirm', { name: nameOf(account) }))) {
+                        onRemove(account.id)
+                      }
+                    }}
+                  >
+                    {busyId === `remove:${account.id}` ? t('accountsRemoving') : t('accountsRemove')}
+                  </button>
+                </span>
+              </li>
+            ))}
+          </ul>
+          )}
+      <div style={accountActionsStyle}>
+        <button
+          type="button"
+          style={primaryButtonStyle}
+          /*
+           * Disabled rather than hidden when the app holds no readable sign-in:
+           * a hidden control leaves the user with no idea the feature exists,
+           * while a disabled one beside its hint says exactly what to do.
+           */
+          disabled={anyBusy || !section.canCapture}
+          title={section.canCapture ? undefined : section.captureHint ?? t('accountsCaptureHint')}
+          onClick={onCapture}
+        >
+          {busyId === 'capture' ? t('accountsCapturing') : t('accountsCapture')}
+        </button>
+      </div>
+      {section.canCapture
+        ? null
+        : <p style={bodyStyle}>{section.captureHint ?? t('accountsCaptureHint')}</p>}
+      <p style={bodyStyle}>{t('accountsDirectory', { path: section.directory })}</p>
+    </div>
+  )
+}
+
 export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyPluginCardProps) {
   if (t === undefined) throw new Error('WorkBuddy plugin card requires its translation function')
   const [open, setOpen] = useState(false)
@@ -886,6 +1040,12 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
   // per-package breakdown — are deliberate visits, since neither changes while
   // you watch.
   const [tab, setTab] = useState<'status' | 'context' | 'details'>('status')
+  /**
+   * The account write in flight, if any. One at a time: capture, switch and
+   * remove all mutate the same pointer, and letting two race would leave the
+   * list showing whichever response landed last rather than what is on disk.
+   */
+  const [accountBusy, setAccountBusy] = useState<string>()
   const mounted = useRef(true)
   /**
    * Identity of the newest read that may write. Assigned when a read *starts*,
@@ -1122,6 +1282,74 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
     void control({ action: 'probe', model: modelId })
   }, [control])
 
+  /**
+   * Perform one account write (capture, switch, remove).
+   *
+   * Kept separate from {@link control} because the two differ in their guards:
+   * account writes need no probe key semantics beyond the header, and they must
+   * re-read on *failure* as well as success — a switch that the host refused
+   * leaves the card's list disagreeing with disk, and the honest state is the
+   * host's, not the one the card was showing.
+   */
+  const accountAction = useCallback(async (action: WorkBuddyAccountsAction, busyKey: string): Promise<void> => {
+    const key = status?.status === 'signed-in' ? status.probeKey : undefined
+    if (key === undefined) return
+    setAccountBusy(busyKey)
+    const controller = trackController()
+    try {
+      const response = await fetch(variant.accountsPath, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Workbuddy-Probe-Key': key },
+        credentials: 'same-origin',
+        signal: controller.signal,
+        body: JSON.stringify(action),
+      })
+      const value: unknown = await response.json().catch(() => undefined)
+      if (!response.ok) {
+        const code = typeof value === 'object' && value !== null ? (value as Record<string, unknown>)['error'] : undefined
+        // The two failures worth their own wording: the app holds no readable
+        // sign-in to capture, and an id the store no longer knows about.
+        if (code === 'no-desktop-sign-in') throw new Error(t('accountsCaptureFailed'))
+        const message = typeof value === 'object' && value !== null && 'message' in value
+          ? String((value as Record<string, unknown>)['message'])
+          : typeof code === 'string' ? code : `HTTP ${response.status}`
+        throw new Error(message)
+      }
+      await refresh(controller.signal)
+    } catch (error: unknown) {
+      if (mounted.current && controller.signal.aborted !== true) {
+        // Re-read *first*, then report: `refresh` clears the notice on success,
+        // so setting it before the read would have the successful read wipe the
+        // very failure being reported. The read is what makes the list match
+        // disk after a refused switch; the message is what explains it.
+        await refresh(controller.signal)
+        // Re-checked after the await: either may have changed while the read
+        // was in flight, and reporting into an unmounted or aborted card is
+        // exactly the stray update this guard exists to prevent.
+        if (mounted.current) {
+          setReadFailure(t('accountsError', { message: error instanceof Error ? error.message : t('requestFailed') }))
+        }
+      }
+    } finally {
+      manualControllers.current.delete(controller)
+      if (mounted.current) setAccountBusy(undefined)
+    }
+  }, [refresh, status, t, trackController, variant.accountsPath])
+
+  const captureAccount = useCallback((): void => {
+    void accountAction({ action: 'capture' }, 'capture')
+  }, [accountAction])
+
+  const useAccount = useCallback((id: string): void => {
+    void accountAction({ action: 'use', id }, id)
+  }, [accountAction])
+
+  const removeAccount = useCallback((id: string): void => {
+    // Prefixed so a remove in flight is distinguishable from a switch on the
+    // same row; both disable the row, only the label differs.
+    void accountAction({ action: 'remove', id }, `remove:${id}`)
+  }, [accountAction])
+
   const title = t(variant.titleKey)
   /**
    * The failure the assist block covers, when this document has one. Computed
@@ -1283,6 +1511,24 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
                       )}
                       {status.creditsError === undefined ? null
                         : <p style={errorStyle}>{t('creditsError', { message: status.creditsError })}</p>}
+                      {/*
+                        * Multi-account switching sits above the probe controls:
+                        * which account is served governs everything below it,
+                        * and the probe observations are keyed by that account.
+                        * Presence of the section is the capability signal — a
+                        * host without an account store omits it and this card
+                        * renders no switcher at all.
+                        */}
+                      {status.accounts === undefined ? null : (
+                        <AccountSection
+                          section={status.accounts}
+                          busyId={accountBusy}
+                          onCapture={captureAccount}
+                          onUse={useAccount}
+                          onRemove={removeAccount}
+                          t={t}
+                        />
+                      )}
                       {status.probe === undefined ? null : (
                         <ProbeSection
                           probe={status.probe}

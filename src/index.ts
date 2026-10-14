@@ -32,6 +32,8 @@ import { piAiVersionWarning } from './pi-ai-guard.ts'
 import { registerWorkBuddyStatusRoute } from './web-status.ts'
 import { registerWorkBuddyUpdateRoute } from './update-route.ts'
 import { createProbeKey, registerWorkBuddyProbeRoute } from './probe-route.ts'
+import { registerWorkBuddyAccountsRoute, workBuddyAccountsSection } from './accounts-route.ts'
+import type { WorkBuddyAccountStore } from './accounts-store.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
 import type { WorkBuddyWebCatalog, WorkBuddyWebProbeSection } from './status-paths.ts'
 import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
@@ -300,6 +302,12 @@ interface VariantRuntime {
    */
   visibilityStore: WorkBuddyVisibilityStore
   /**
+   * This variant's parked accounts, or undefined on a host without a slot
+   * store (the credential store has none). Read per call, so a capture or
+   * switch changes what the card lists without rebuilding the runtime.
+   */
+  accountStore: WorkBuddyAccountStore | undefined
+  /**
    * The visibility account key currently in effect (`uid:enterpriseId`), or
    * undefined when signed out or the credential carries no uid. Read per call,
    * so an account switch changes the answer without rebuilding anything.
@@ -439,6 +447,9 @@ function createVariantRuntime(
   return {
     variant,
     store,
+    // The credential store owns the slot store, so the card's switcher and the
+    // resolution path can never disagree about which accounts exist.
+    accountStore: store.accountStore(),
     client,
     catalog,
     probeStore,
@@ -667,6 +678,33 @@ export function apply(ctx: Context, config: Config): void {
   // Same-origin routes backing each Plugin-configuration card; the webServer
   // service is optional (a headless profile serves no browser).
   const probeKey = createProbeKey()
+  /**
+   * Whether the desktop app currently holds a sign-in that `capture` could
+   * archive, plus why not when it does not.
+   *
+   * Answered as a doctor-style probe rather than by throwing: the card needs
+   * to *disable* the capture control and say which app to sign into, and a
+   * sign-out is an ordinary state, not a failure of the status document.
+   */
+  const captureAvailability = async (): Promise<{ ok: boolean, hint?: string }> => {
+    // Any one variant's store can answer this: the question is whether the
+    // desktop app has a readable credential at all, and both variants read the
+    // same shared auth directory with per-variant filenames.
+    for (const runtime of runtimes) {
+      try {
+        if (await runtime.store.desktopCredential() !== undefined) return { ok: true }
+      } catch (error: unknown) {
+        // A region mismatch or an unreadable file is exactly the case the hint
+        // has to explain; keep going in case the other product is fine.
+        const message = error instanceof Error ? error.message : String(error)
+        if (runtimes.length === 1) return { ok: false, hint: message.slice(0, 300) }
+      }
+    }
+    return {
+      ok: false,
+      hint: `Sign in once in the ${runtimes[0]?.variant.appName ?? 'WorkBuddy'} desktop app, then capture the account.`,
+    }
+  }
   let setMaximumContextWindow: ((enabled: boolean) => Promise<{ state: string; reason?: string }>) | undefined
   /**
    * Whether this host's settings service carries the 0.1.2-era section API.
@@ -778,6 +816,11 @@ export function apply(ctx: Context, config: Config): void {
             ? undefined
             : { account, disabled: runtime.visibilityStore.disabled(account) }
         },
+        // Parked accounts and the active pointer, so the card can render a
+        // switcher without a second request. Absent when this host has no
+        // account store; a store with no slots answers an empty list, which is
+        // what lets the card offer the first capture.
+        accounts: () => workBuddyAccountsSection(runtime.accountStore, captureAvailability),
         ...runtime.variant.id === CN_VARIANT.id ? {} : {
           // Presence of this field in the document is the card's capability
           // signal, so the getter answers `undefined` — not merely `false` —
@@ -860,6 +903,32 @@ export function apply(ctx: Context, config: Config): void {
           return { state: 'updated' }
         },
       }, probeKey)
+      // The switching write route. Guarded by the same in-process key as probe
+      // control: a switch decides which account every later request is billed
+      // to, so it is not left to the read-only status route's loopback gate.
+      registerWorkBuddyAccountsRoute(webCtx, {
+        variantId: runtime.variant.id,
+        accounts: runtime.accountStore,
+        desktopCredential: () => runtime.store.desktopCredential(),
+        // A capture or switch changes which account is served, so the catalog,
+        // visibility section and picker must re-resolve exactly as they do for
+        // a sign-in the sweep noticed.
+        onChange: async () => {
+          try {
+            const credential = await runtime.store.current()
+            if (credential === undefined) {
+              adoptIdentity(runtime, undefined, undefined)
+              return
+            }
+            adoptIdentity(runtime, credentialIdentity(credential), visibilityAccountOf(credential))
+          } catch (error: unknown) {
+            // A refused credential (region mismatch) is reported by the next
+            // status read; it must not escape the route's response.
+            ctx.logger.warn(`dsh-workbuddy-connect: account change could not be applied: ${String(error)}`)
+          }
+        },
+        key: probeKey,
+      })
     }
   })
 

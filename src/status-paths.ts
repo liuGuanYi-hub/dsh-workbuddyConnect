@@ -34,6 +34,64 @@ export const WORKBUDDY_AI_PROBE_PATH = '/plugins/dsh-workbuddy-connect/ai/probe'
  */
 export const WORKBUDDY_UPDATE_PATH = '/plugins/dsh-workbuddy-connect/update'
 
+/**
+ * Plugin-owned account-switching endpoint.
+ *
+ * A write route like the probe route, and gated the same way: loopback
+ * Host/Origin plus the in-process key from the status document. Switching
+ * accounts changes which credential every later request is sent as, so it is
+ * guarded exactly as strictly as probe control — never by the read-only status
+ * route alone.
+ */
+export const WORKBUDDY_ACCOUNTS_PATH = '/plugins/dsh-workbuddy-connect/accounts'
+export const WORKBUDDY_AI_ACCOUNTS_PATH = '/plugins/dsh-workbuddy-connect/ai/accounts'
+
+/** One variant's account routes, derived from its id. */
+export function accountsPathFor(variantId: string): string {
+  return variantId === 'workbuddy' ? WORKBUDDY_ACCOUNTS_PATH : WORKBUDDY_AI_ACCOUNTS_PATH
+}
+
+/** One parked account as the card renders it; never carries token material. */
+export interface WorkBuddyWebAccount {
+  id: string
+  label?: string
+  nickname?: string
+  /** Whether the plugin is currently serving this account. */
+  active: boolean
+  /** Whether this account's access token is already expired. */
+  expired: boolean
+  /** Access-token expiry, epoch milliseconds. */
+  expiresAt: number
+}
+
+/**
+ * Which actions the card may ask for.
+ *
+ * `capture` archives whatever the desktop app is signed into right now — the
+ * only way to import an account whose session the app owns. `use` switches.
+ * `remove` unparks. `rename` relabels.
+ */
+export type WorkBuddyAccountsAction =
+  | { action: 'capture', label?: string }
+  | { action: 'use', id: string }
+  | { action: 'remove', id: string }
+  | { action: 'rename', id: string, label?: string }
+
+/** The account section of a status document, absent when unsupported. */
+export interface WorkBuddyWebAccountsSection {
+  accounts: readonly WorkBuddyWebAccount[]
+  /** Directory holding the slots, shown so a user can back it up. */
+  directory: string
+  /**
+   * Whether the desktop app itself currently holds a readable sign-in, which
+   * is what `capture` needs. Answered without failing the document: a doctor
+   * style probe, so the card can disable the capture control and say why.
+   */
+  canCapture: boolean
+  /** Why capture is unavailable; present only when `canCapture` is false. */
+  captureHint?: string
+}
+
 /** One model's recorded probe observation, as the card displays it. */
 export interface WorkBuddyWebProbeModel {
   id: string
@@ -293,6 +351,11 @@ export type WorkBuddyWebStatus =
     useMaximumContextWindow?: boolean
     /** Per-account hidden-model state for the card's visibility controls. */
     visibility?: WorkBuddyWebVisibilitySection
+    /**
+     * Parked accounts and which one is being served. Absent on a host with no
+     * account store, which is the card's signal to render no switcher at all.
+     */
+    accounts?: WorkBuddyWebAccountsSection
     /**
      * In-process key authorizing probe control writes. Handed to the card with
      * the status document (the card is same-origin and already had to pass the

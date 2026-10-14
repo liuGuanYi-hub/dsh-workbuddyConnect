@@ -15,7 +15,7 @@ import { normalizeCredits } from './upstream.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
 import { WORKBUDDY_STATUS_PATH } from './status-paths.ts'
-import type { WorkBuddyWebCatalog, WorkBuddyWebModelBadge, WorkBuddyWebProbeSection, WorkBuddyWebStatus, WorkBuddyWebVisibilitySection } from './status-paths.ts'
+import type { WorkBuddyWebCatalog, WorkBuddyWebModelBadge, WorkBuddyWebAccountsSection, WorkBuddyWebProbeSection, WorkBuddyWebStatus, WorkBuddyWebVisibilitySection } from './status-paths.ts'
 
 export { WORKBUDDY_STATUS_PATH } from './status-paths.ts'
 export type { WorkBuddyWebStatus } from './status-paths.ts'
@@ -53,6 +53,14 @@ export interface WorkBuddyStatusRouteOptions {
    * no visibility controls rather than a list every such account would share.
    */
   visibility?: () => WorkBuddyWebVisibilitySection | undefined
+  /**
+   * Parked accounts and which one is served. Undefined when the caller has no
+   * account store (tests, headless profiles); the field then stays out of the
+   * document and the card renders no switcher. A defined getter may still
+   * answer a section with an empty list, which is what lets the card offer the
+   * first capture.
+   */
+  accounts?: () => Promise<WorkBuddyWebAccountsSection | undefined>
   /**
    * Route path to mount. Defaults to the CN variant's path so existing callers
    * and tests keep their behaviour; the international variant passes its own.
@@ -193,6 +201,13 @@ export async function workBuddyWebStatus(
       ...maximumContextWindow === undefined ? {} : { useMaximumContextWindow: maximumContextWindow },
     }
   }
+  // Parked accounts ride the signed-in document beside the visibility section
+  // they are scoped by, so the card can render the switcher in the same pass
+  // it renders everything else. Absent when the host has no account store.
+  // Resolved before the credit fetch below so a store that throws cannot cost
+  // the document its balance, and so the field ordering stays as declared.
+  const accounts = deps.accounts === undefined ? undefined : await deps.accounts()
+  const withAccounts: WorkBuddyWebStatus = accounts === undefined ? probed : { ...probed, accounts }
   try {
     const credential = await deps.store.current()
     if (credential !== undefined) {
@@ -200,12 +215,12 @@ export async function workBuddyWebStatus(
       // `unlimited` and `cycleResetTime` ride along as-is: the card must see
       // "no cap" as its own state, and the fetch only sets them when the
       // upstream actually reported them.
-      return { ...probed, credits }
+      return { ...withAccounts, credits }
     }
   } catch (error: unknown) {
-    return { ...probed, creditsError: safeMessage(error) }
+    return { ...withAccounts, creditsError: safeMessage(error) }
   }
-  return probed
+  return withAccounts
 }
 
 /** The status route's request handler, extracted so tests can mount it on a bare server. */
