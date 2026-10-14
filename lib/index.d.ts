@@ -4,33 +4,6 @@ import { PiAiAdapter, PiAiAdapterOptions } from "@deepseek-ai/dsh-llm-pi-ai";
 import { Context } from "@deepseek-ai/cordis";
 import { SettingsNamespace } from "@deepseek-ai/dsh-settings";
 import { AttachmentStore } from "@deepseek-ai/dsh-attachment";
-//#region src/status-paths.d.ts
-/**
- * Why no credential is usable, as a closed enum the browser half switches on.
- *
- * Deliberately separate from `reason`: `reason` is free text meant for a human
- * to read, so matching on it would break the moment the wording changes. This
- * is the machine-readable half, and the card uses it — never a substring of
- * `reason` — to decide whether the Agent assist block applies.
- */
-type WorkBuddySignedOutReasonCode =
-/** Nobody is signed in; nothing diagnosable beyond that. */
-'no-credential' |
-/** A credential for the *other* product was found in this variant's file. */
-'credential-region-mismatch' |
-/** An encrypted credential exists but could not be opened (wrong key, GCM failure, helper crash). */
-'encrypted-credential-unreadable' |
-/** A product on a supported platform: discovery ran to completion and found no usable candidate. */
-'electron-binary-not-found' |
-/** A product on a supported platform: discovery found more than one distinct usable app. */
-'electron-binary-ambiguous' |
-/** No auto-discovery for this product/platform and no explicit path configured. */
-'electron-binary-unavailable' |
-/** An explicit path (option or env) is set but missing or not executable. */
-'electron-path-invalid' |
-/** Discovery could not finish: tool missing, timeout, output overflow, unreadable plist. */
-'electron-discovery-incomplete';
-//#endregion
 //#region src/app-version.d.ts
 /** Basename of the saved version under `$DSH_HOME`. */
 declare const WORKBUDDY_APP_VERSION_FILENAME = ".workbuddy-ai-version.json";
@@ -769,6 +742,131 @@ declare const AI_VARIANT: WorkBuddyVariant;
 /** Look up a variant by provider id. */
 declare function variantFor(id: string): WorkBuddyVariant | undefined;
 //#endregion
+//#region src/accounts-store.d.ts
+/** One archived account: the credential plus how the UI describes it. */
+interface WorkBuddyAccountSlot {
+  /** Stable slot id; also the file basename. Never derived from the uid. */
+  id: string;
+  /** User-facing label; falls back to the nickname when unset. */
+  label?: string;
+  /** When the slot was first created, epoch milliseconds. */
+  addedAtMs: number;
+  /** When the slot was last written, epoch milliseconds. */
+  updatedAtMs: number;
+  /** The archived credential. */
+  credential: WorkBuddyCredential;
+}
+/** A slot rendered for the settings card and CLI: no token material. */
+interface WorkBuddyAccountSummary {
+  id: string;
+  label?: string;
+  nickname?: string;
+  uid: string;
+  enterpriseId?: string;
+  domain: string;
+  addedAtMs: number;
+  updatedAtMs: number;
+  expiresAtMs: number;
+  /** Whether this slot is the one the plugin currently reads. */
+  active: boolean;
+  /** Whether the slot's access token is already expired. */
+  expired: boolean;
+}
+/**
+ * The per-variant slot store.
+ *
+ * Every method that mutates disk takes the same file lock the credential
+ * store uses, so a switch racing a token refresh cannot interleave a partial
+ * write.
+ */
+declare class WorkBuddyAccountStore {
+  private readonly variant;
+  constructor(options: {
+    variant: WorkBuddyVariant;
+  });
+  /** Directory holding this variant's slots. */
+  directory(): string;
+  /** Path of the active-pointer document. */
+  private activePath;
+  /** Path of one slot document. */
+  slotPath(id: string): string;
+  /** Create the slot directory on first write. */
+  private ensureDirectory;
+  /**
+   * Read every slot. Unreadable or malformed slot files are skipped rather
+   * than thrown: one corrupt archive must not hide the others, and the card
+   * reports the count it can actually use.
+   */
+  list(): Promise<WorkBuddyAccountSlot[]>;
+  /** Read one slot, or undefined when absent or malformed. */
+  readSlot(id: string): Promise<WorkBuddyAccountSlot | undefined>;
+  /** The active slot id, or undefined when no slot is selected. */
+  activeId(): Promise<string | undefined>;
+  /**
+   * Whether slot mode governs credential resolution.
+   *
+   * Deliberately requires *both* a slot on disk and a valid pointer: a
+   * half-written state (pointer without slots, or slots nobody selected) must
+   * fall back to the desktop file, because silently answering with an
+   * arbitrary parked account would be worse than following the app.
+   */
+  isEnabled(): Promise<boolean>;
+  /** The active slot's credential, or undefined when none applies. */
+  activeCredential(): Promise<WorkBuddyCredential | undefined>;
+  /**
+   * Archive a credential as a slot, keyed by its uid.
+   *
+   * Re-adding the same account updates the existing slot in place, keeping
+   * its original `addedAtMs` and label, so the pointer stays valid across
+   * re-imports. A different account never lands in the same slot.
+   */
+  save(credential: WorkBuddyCredential, options?: {
+    label?: string;
+    activate?: boolean;
+  }): Promise<WorkBuddyAccountSlot>;
+  /** Point the plugin at one slot. Throws when the slot does not exist. */
+  setActive(id: string): Promise<void>;
+  /**
+   * Remove a slot. When the removed slot was active the pointer is dropped,
+   * handing resolution back to the desktop file rather than silently
+   * promoting a different account.
+   */
+  remove(id: string): Promise<void>;
+  /** Set or clear one slot's label. */
+  relabel(id: string, label: string | undefined): Promise<WorkBuddyAccountSlot>;
+  /** Replace a slot's stored credential after a token refresh. */
+  updateCredential(id: string, credential: WorkBuddyCredential): Promise<void>;
+  /** Slots with their active/expired state, for the card and CLI. */
+  summaries(): Promise<WorkBuddyAccountSummary[]>;
+}
+//#endregion
+//#region src/status-paths.d.ts
+/**
+ * Why no credential is usable, as a closed enum the browser half switches on.
+ *
+ * Deliberately separate from `reason`: `reason` is free text meant for a human
+ * to read, so matching on it would break the moment the wording changes. This
+ * is the machine-readable half, and the card uses it — never a substring of
+ * `reason` — to decide whether the Agent assist block applies.
+ */
+type WorkBuddySignedOutReasonCode =
+/** Nobody is signed in; nothing diagnosable beyond that. */
+'no-credential' |
+/** A credential for the *other* product was found in this variant's file. */
+'credential-region-mismatch' |
+/** An encrypted credential exists but could not be opened (wrong key, GCM failure, helper crash). */
+'encrypted-credential-unreadable' |
+/** A product on a supported platform: discovery ran to completion and found no usable candidate. */
+'electron-binary-not-found' |
+/** A product on a supported platform: discovery found more than one distinct usable app. */
+'electron-binary-ambiguous' |
+/** No auto-discovery for this product/platform and no explicit path configured. */
+'electron-binary-unavailable' |
+/** An explicit path (option or env) is set but missing or not executable. */
+'electron-path-invalid' |
+/** Discovery could not finish: tool missing, timeout, output overflow, unreadable plist. */
+'electron-discovery-incomplete';
+//#endregion
 //#region src/desktop-credential-protection.d.ts
 /** The four states a desktop auth document can be read as. */
 type DesktopAuthFormat = 'absent' | 'plaintext' | 'encrypted' | 'unrecognized';
@@ -988,6 +1086,14 @@ interface WorkBuddyStoreOptions {
    * stub. Structural so a store never depends on how the key is reached.
    */
   keyProvider?: Pick<WorkBuddyAtRestKeyProvider, 'protectorKeyFor' | 'helperPath'>;
+  /**
+   * Slot store consulted before the desktop file, enabling multi-account
+   * switching. Defaults to a real store when {@link variant} is set, so
+   * everyday construction needs no wiring; pass `undefined` explicitly only
+   * from tests that must pin single-account behavior, and a stand-in store to
+   * assert slot handling without touching `$DSH_HOME`.
+   */
+  accounts?: WorkBuddyAccountStore;
 }
 /** Basename of the plugin-owned credential copy inside the Harness home. */
 declare const WORKBUDDY_AUTH_FILENAME = ".workbuddy-auth.json";
@@ -1039,6 +1145,8 @@ declare class WorkBuddyCredentialStore {
   private readonly keyProvider;
   private desktopPathOverride;
   private inflight;
+  /** Slot store consulted first when configured; undefined keeps legacy behavior. */
+  private readonly accounts;
   constructor(options: WorkBuddyStoreOptions);
   /**
    * Configuration precedence for the desktop file: the plugin's configured
@@ -1055,17 +1163,60 @@ declare class WorkBuddyCredentialStore {
   desktopAuthPath(): string | undefined;
   /** The plugin-owned copy path, for diagnostics. */
   ownAuthPath(): string;
-  /** Read the freshest stored credential without refreshing anything. */
+  /**
+   * Read the freshest stored credential without refreshing anything.
+   *
+   * When the account store holds an active slot, that slot *is* the answer and
+   * the desktop file is not consulted at all: multi-account mode exists
+   * precisely so the running plugin can serve an account the desktop app is
+   * not currently signed into, and letting the app's live session win would
+   * silently undo every switch. Slot mode is off by default
+   * ({@link WorkBuddyAccountStore.isEnabled}), so a profile that never opts in
+   * keeps the original two-source merge byte for byte.
+   */
   current(): Promise<WorkBuddyCredential | undefined>;
   /**
    * The credential to send upstream: {@link current}, refreshed on demand.
    * Single-flight, so parallel requests share one refresh.
    */
   resolve(): Promise<WorkBuddyCredential>;
+  /**
+   * The credential the desktop app itself is signed into right now, ignoring
+   * the account slots.
+   *
+   * `accounts add` has to read this rather than {@link current}: once a first
+   * account is parked, slot mode governs `current()`, so importing a *second*
+   * account would otherwise re-read the first slot and update it in place —
+   * making it impossible to ever capture a second account. The app's file is
+   * the only source for "what am I signed into right now", so it is what
+   * archiving must consult.
+   */
+  desktopCredential(): Promise<WorkBuddyCredential | undefined>;
   /** Read-only sign-in summary; never refreshes and never throws. */
   status(): Promise<WorkBuddyAuthStatus>;
   /** Remove the plugin-owned copy; the desktop file is untouched. */
   logout(): Promise<void>;
+  /**
+   * The active account slot's credential, or undefined when slot mode is off.
+   *
+   * A slot is still checked against the variant's region: a slot archived for
+   * the other product would otherwise send a CN token to the international
+   * endpoint, which is the exact failure the desktop-file path already
+   * refuses. The check is shared with {@link current}'s desktop/copy branch so
+   * the two cannot drift apart.
+   */
+  private activeSlotCredential;
+  /** The account store governing slot mode, when this profile uses one. */
+  accountStore(): WorkBuddyAccountStore | undefined;
+  /**
+   * Persist a refreshed token into the slot it came from.
+   *
+   * Only the slot that produced the credential is written. A refresh for a
+   * slot the user switched away from mid-flight must not overwrite the
+   * newly-selected account, and matching on uid is what makes that safe even
+   * though the selection can move between the read and the write.
+   */
+  private saveSlotted;
   private needsRefresh;
   private refreshNow;
   private saveOwn;
