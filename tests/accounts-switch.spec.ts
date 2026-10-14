@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WorkBuddyAccountStore } from '../src/accounts-store.ts'
 import { WorkBuddyCredentialStore, type WorkBuddyCredential } from '../src/auth.ts'
+import { WorkBuddyUpstreamClient } from '../src/upstream.ts'
 import { AI_VARIANT, CN_VARIANT } from '../src/variants.ts'
 
 /**
@@ -324,5 +325,73 @@ describe('status reflects the selected slot', () => {
       nickname: '停靠账号',
       source: 'dsh',
     })
+  })
+})
+
+describe('the served account reaches the wire', () => {
+  /**
+   * Account isolation on the upstream call.
+   *
+   * The plugin sends no machine or session fingerprint — it mirrors the
+   * official CLI's header set, whose per-account identifiers are the
+   * credential-derived ones. Identity therefore travels through `X-User-Id`,
+   * which is what makes switching accounts switch identity without a
+   * derived-device-id scheme. This pins that the uid on the request is the
+   * selected slot's, and that the refresh token never rides a chat call.
+   */
+  it('carries the selected uid and no refresh token', async () => {
+    const dir = await tempDir('wb-slot-')
+    await tempHome()
+    const accounts = new WorkBuddyAccountStore({ variant: CN_VARIANT })
+    const one = await accounts.save(credential({
+      uid: 'uid-1',
+      accessToken: 'at-1',
+      refreshToken: 'rt-secret-1',
+    }))
+    await accounts.save(credential({ uid: 'uid-2', accessToken: 'at-2', refreshToken: 'rt-secret-2' }))
+    await accounts.setActive(one.id)
+
+    const store = storeFor({ desktopPath: join(dir, 'none.info'), ownPath: join(dir, 'own.json'), accounts })
+
+    const client = new WorkBuddyUpstreamClient()
+    const seen: Record<string, string>[] = []
+    CLEANUP.push(async () => { vi.unstubAllGlobals() })
+    vi.stubGlobal('fetch', async (_url: unknown, init?: { headers?: Record<string, string> }) => {
+      seen.push(init?.headers ?? {})
+      // A minimal well-formed stream so the client returns rather than parsing
+      // an error envelope.
+      return new Response('data: [DONE]\n\n', {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      })
+    })
+
+    const first = await store.current()
+    expect(first?.uid).toBe('uid-1')
+    await client.chatStream(
+      first!,
+      JSON.stringify({ model: 'hy3', messages: [{ role: 'user', content: 'hi' }], stream: true }),
+    ).catch(() => undefined)
+
+    const headers = seen[0] ?? {}
+    expect(headers['X-User-Id']).toBe('uid-1')
+    expect(headers['Authorization']).toBe('Bearer at-1')
+    expect(JSON.stringify(headers)).not.toContain('rt-secret-1')
+
+    // Switch, and the next request is built from the other account.
+    const two = (await accounts.list()).find(slot => slot.credential.uid === 'uid-2')!
+    await accounts.setActive(two.id)
+    const second = await store.current()
+    expect(second?.uid).toBe('uid-2')
+
+    seen.length = 0
+    await client.chatStream(
+      second!,
+      JSON.stringify({ model: 'hy3', messages: [{ role: 'user', content: 'hi' }], stream: true }),
+    ).catch(() => undefined)
+    const next = seen[0] ?? {}
+    expect(next['X-User-Id']).toBe('uid-2')
+    expect(next['Authorization']).toBe('Bearer at-2')
+    expect(JSON.stringify(next)).not.toContain('rt-secret-2')
   })
 })
