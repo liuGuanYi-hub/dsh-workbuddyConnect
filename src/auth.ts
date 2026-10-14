@@ -13,6 +13,7 @@ import { homedir, release } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
+import { WorkBuddyAccountStore, sameAccountIdentity } from './accounts-store.ts'
 import { regionOf } from './upstream.ts'
 import {
   WorkBuddyAtRestKeyProvider,
@@ -81,6 +82,14 @@ export interface WorkBuddyStoreOptions {
    * stub. Structural so a store never depends on how the key is reached.
    */
   keyProvider?: Pick<WorkBuddyAtRestKeyProvider, 'protectorKeyFor' | 'helperPath'>
+  /**
+   * Slot store consulted before the desktop file, enabling multi-account
+   * switching. Defaults to a real store when {@link variant} is set, so
+   * everyday construction needs no wiring; pass `undefined` explicitly only
+   * from tests that must pin single-account behavior, and a stand-in store to
+   * assert slot handling without touching `$DSH_HOME`.
+   */
+  accounts?: WorkBuddyAccountStore
 }
 
 /** Basename of the plugin-owned credential copy inside the Harness home. */
@@ -320,6 +329,8 @@ export class WorkBuddyCredentialStore {
   private readonly keyProvider: NonNullable<WorkBuddyStoreOptions['keyProvider']>
   private desktopPathOverride: string | undefined
   private inflight: Promise<WorkBuddyCredential> | undefined
+  /** Slot store consulted first when configured; undefined keeps legacy behavior. */
+  private readonly accounts: WorkBuddyAccountStore | undefined
 
   constructor(options: WorkBuddyStoreOptions) {
     this.variant = options.variant
@@ -333,6 +344,11 @@ export class WorkBuddyCredentialStore {
     this.keyProvider = options.keyProvider
       ?? new WorkBuddyAtRestKeyProvider({ product: electronProfileFor(options.variant) })
     this.desktopPathOverride = options.desktopPath
+    // Only a variant can scope slots (the layout is per-product and the region
+    // check needs a variant), so legacy variant-less stores never enter slot
+    // mode and keep their single-credential semantics.
+    this.accounts = options.accounts
+      ?? (options.variant === undefined ? undefined : new WorkBuddyAccountStore({ variant: options.variant }))
   }
 
   /**
@@ -371,8 +387,20 @@ export class WorkBuddyCredentialStore {
     return this.ownPath
   }
 
-  /** Read the freshest stored credential without refreshing anything. */
+  /**
+   * Read the freshest stored credential without refreshing anything.
+   *
+   * When the account store holds an active slot, that slot *is* the answer and
+   * the desktop file is not consulted at all: multi-account mode exists
+   * precisely so the running plugin can serve an account the desktop app is
+   * not currently signed into, and letting the app's live session win would
+   * silently undo every switch. Slot mode is off by default
+   * ({@link WorkBuddyAccountStore.isEnabled}), so a profile that never opts in
+   * keeps the original two-source merge byte for byte.
+   */
   async current(): Promise<WorkBuddyCredential | undefined> {
+    const slotted = await this.activeSlotCredential()
+    if (slotted !== undefined) return slotted
     const [desktop, own] = await Promise.all([this.readDesktop(), this.readOwn()])
     // A credential belonging to the other product is refused rather than used:
     // the two apps share one auth directory and differ only by filename, so a
@@ -467,6 +495,59 @@ export class WorkBuddyCredentialStore {
     await rm(`${this.ownPath}.lock`, { force: true })
   }
 
+  /**
+   * The active account slot's credential, or undefined when slot mode is off.
+   *
+   * A slot is still checked against the variant's region: a slot archived for
+   * the other product would otherwise send a CN token to the international
+   * endpoint, which is the exact failure the desktop-file path already
+   * refuses. The check is shared with {@link current}'s desktop/copy branch so
+   * the two cannot drift apart.
+   */
+  private async activeSlotCredential(): Promise<WorkBuddyCredential | undefined> {
+    if (this.accounts === undefined) return undefined
+    const credential = await this.accounts.activeCredential()
+    if (credential === undefined) return undefined
+    if (this.variant !== undefined) {
+      const region = regionOf(credential.domain)
+      if (region !== this.variant.region) {
+        throw new WorkBuddyElectronPathError(
+          'credential-region-mismatch',
+          `the selected account slot holds a ${region === 'cn' ? 'WorkBuddy (CN)' : 'WorkBuddy AI'}`
+          + ` credential, but ${this.variant.displayName} needs a`
+          + ` ${this.variant.region === 'cn' ? 'WorkBuddy (CN)' : 'WorkBuddy AI'} one`
+          + ` (domain ${JSON.stringify(credential.domain)});`
+          + ' select a slot for this product',
+        )
+      }
+    }
+    return credential
+  }
+
+  /** The account store governing slot mode, when this profile uses one. */
+  accountStore(): WorkBuddyAccountStore | undefined {
+    return this.accounts
+  }
+
+  /**
+   * Persist a refreshed token into the slot it came from.
+   *
+   * Only the slot that produced the credential is written. A refresh for a
+   * slot the user switched away from mid-flight must not overwrite the
+   * newly-selected account, and matching on uid is what makes that safe even
+   * though the selection can move between the read and the write.
+   */
+  private async saveSlotted(credential: WorkBuddyCredential): Promise<boolean> {
+    if (this.accounts === undefined) return false
+    const activeId = await this.accounts.activeId()
+    if (activeId === undefined) return false
+    const slot = await this.accounts.readSlot(activeId)
+    if (slot === undefined) return false
+    if (!sameAccountIdentity(slot.credential, credential)) return false
+    await this.accounts.updateCredential(activeId, credential)
+    return true
+  }
+
   private needsRefresh(credential: WorkBuddyCredential): boolean {
     if (credential.expiresAtMs <= 0) return true
     return Date.now() + this.refreshMarginMs >= credential.expiresAtMs
@@ -501,6 +582,11 @@ export class WorkBuddyCredentialStore {
   }
 
   private async saveOwn(credential: WorkBuddyCredential): Promise<void> {
+    // A slotted credential belongs to its slot, not to the single-account
+    // copy: writing both would leave a stale token in the file the desktop
+    // path falls back to once the pointer is cleared. The slot write is tried
+    // first and, when it applies, is the only write.
+    if (await this.saveSlotted(credential)) return
     await withFileLock(this.ownPath, async () => {
       await writeFileAtomic(this.ownPath, `${JSON.stringify(ownDocument(credential), null, 2)}\n`, {
         mode: 0o600,
