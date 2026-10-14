@@ -457,6 +457,34 @@ export class WorkBuddyCredentialStore {
     return this.inflight
   }
 
+  /**
+   * The credential the desktop app itself is signed into right now, ignoring
+   * the account slots.
+   *
+   * `accounts add` has to read this rather than {@link current}: once a first
+   * account is parked, slot mode governs `current()`, so importing a *second*
+   * account would otherwise re-read the first slot and update it in place —
+   * making it impossible to ever capture a second account. The app's file is
+   * the only source for "what am I signed into right now", so it is what
+   * archiving must consult.
+   */
+  async desktopCredential(): Promise<WorkBuddyCredential | undefined> {
+    const credential = await this.readDesktop()
+    if (credential === undefined) return undefined
+    if (this.variant !== undefined) {
+      const region = regionOf(credential.domain)
+      if (region !== this.variant.region) {
+        throw new WorkBuddyElectronPathError(
+          'credential-region-mismatch',
+          `${this.variant.displayName} received a ${region === 'cn' ? 'WorkBuddy (CN)' : 'WorkBuddy AI'} credential`
+          + ` (domain ${JSON.stringify(credential.domain)});`
+          + ` point ${this.variant.env} at the ${this.variant.appName} sign-in`,
+        )
+      }
+    }
+    return credential
+  }
+
   /** Read-only sign-in summary; never refreshes and never throws. */
   async status(): Promise<WorkBuddyAuthStatus> {
     try {

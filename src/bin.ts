@@ -4,6 +4,7 @@
 import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { WorkBuddyCredentialStore, workbuddyOwnAuthPath } from './auth.ts'
+import { WorkBuddyAccountError, WorkBuddyAccountStore } from './accounts-store.ts'
 import { WorkBuddyUpstreamClient } from './upstream.ts'
 import { FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS } from './catalog.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
@@ -12,7 +13,10 @@ import { atRestKeyProviderFor } from './desktop-credential-protection.ts'
 import { CN_VARIANT, variantFor, WORKBUDDY_VARIANTS, type WorkBuddyVariant } from './variants.ts'
 import { resolveAppVersion } from './app-version.ts'
 
-type Action = 'doctor' | 'logout' | 'status'
+type Action = 'accounts' | 'doctor' | 'logout' | 'status'
+
+/** Account subcommands, each acting on the slot store for one variant. */
+type AccountsCommand = 'add' | 'list' | 'remove' | 'rename' | 'use'
 
 const JSON_SCHEMA_VERSION = 1
 
@@ -26,15 +30,25 @@ function safeMessage(error: unknown): string {
 
 function printHelp(): void {
   process.stdout.write([
-    'Usage: dsh-workbuddy-connect <doctor|status|logout> [--provider <id>] [--json]',
+    'Usage: dsh-workbuddy-connect <doctor|status|logout|accounts> [options]',
     '',
     '  doctor   secret-free sign-in and environment diagnostics',
     '  status   sign-in state, remaining WorkBuddy credit, and host-bundle health',
     '  logout   remove the plugin-owned credential copy (the desktop app keeps its sign-in)',
+    '  accounts manage parked accounts and switch between them:',
+    '             accounts list                      parked accounts, * marks the active one',
+    '             accounts add [--label <name>]      archive the account the app is signed into',
+    '             accounts use <id>                  serve that account from now on',
+    '             accounts rename <id> [--label <name>]',
+    '             accounts remove <id>',
     '',
     '  --provider  which product to inspect; defaults to workbuddy',
     `              one of: ${WORKBUDDY_VARIANTS.map(variant => variant.id).join(', ')}`,
-    '  --json      emit one secret-free JSON document (doctor/status only)',
+    '  --label     display name for accounts add / rename',
+    '  --json      emit one secret-free JSON document (all commands except logout)',
+    '',
+    '  Sign in to each account in the desktop app and run `accounts add` once per',
+    '  account; slots live under $DSH_HOME and the app\'s own auth file is never written.',
     '',
   ].join('\n'))
 }
@@ -210,6 +224,199 @@ async function status(jsonOutput: boolean, variant: WorkBuddyVariant): Promise<n
   return 0
 }
 
+/** A slot row for the CLI, with no token material. */
+interface AccountRow {
+  id: string
+  label?: string
+  nickname?: string
+  uid: string
+  domain: string
+  expiresAt: string
+  active: boolean
+  expired: boolean
+}
+
+/** Render slots plus the active pointer for `accounts list --json`. */
+async function accountRows(store: WorkBuddyAccountStore): Promise<{ rows: AccountRow[], activeId?: string }> {
+  const activeId = await store.activeId()
+  const summaries = await store.summaries()
+  return {
+    rows: summaries.map(summary => ({
+      id: summary.id,
+      ...summary.label === undefined ? {} : { label: summary.label },
+      ...summary.nickname === undefined ? {} : { nickname: summary.nickname },
+      uid: summary.uid,
+      domain: summary.domain,
+      expiresAt: new Date(summary.expiresAtMs).toISOString(),
+      active: summary.active,
+      expired: summary.expired,
+    })),
+    ...activeId === undefined ? {} : { activeId },
+  }
+}
+
+/** Human-readable label for one slot. */
+function rowLabel(row: AccountRow): string {
+  const name = row.label ?? row.nickname
+  return name === undefined ? row.id : `${name} (${row.id})`
+}
+
+/**
+ * `accounts` — manage parked accounts for one variant.
+ *
+ * `add` archives whatever the desktop app is signed into right now, which is
+ * the only way to capture an account whose sign-in the app owns: sign in, run
+ * `add`, repeat. `use` moves the pointer the running plugin resolves against,
+ * so a switch needs no restart.
+ */
+async function accounts(
+  jsonOutput: boolean,
+  variant: WorkBuddyVariant,
+  command: string | undefined,
+  operands: readonly string[],
+  label: string | undefined,
+): Promise<number> {
+  const store = new WorkBuddyAccountStore({ variant })
+
+  if (command === undefined || command === 'list') {
+    const { rows, activeId } = await accountRows(store)
+    if (jsonOutput) {
+      printJson({
+        schemaVersion: JSON_SCHEMA_VERSION,
+        package: 'dsh-workbuddy-connect',
+        version: WORKBUDDY_CONNECT_VERSION,
+        provider: variant.id,
+        directory: store.directory(),
+        ...activeId === undefined ? {} : { activeId },
+        accounts: rows,
+      })
+      return 0
+    }
+    if (rows.length === 0) {
+      process.stdout.write([
+        `${variant.displayName}: no stored accounts`,
+        `Add one after signing in: dsh-workbuddy-connect accounts add [--label <name>] --provider ${variant.id}`,
+        '',
+      ].join('\n'))
+      return 0
+    }
+    process.stdout.write([
+      `${variant.displayName} accounts (${rows.length}):`,
+      ...rows.map(row => `  ${row.active ? '*' : ' '} ${rowLabel(row)}`
+        + `${row.nickname === undefined || row.label === undefined ? '' : ` as ${row.nickname}`}`
+        + ` — token ${row.expired ? 'expired' : `expires ${row.expiresAt}`}`),
+      '',
+      '(* = currently served; switch with: accounts use <id>)',
+      '',
+    ].join('\n'))
+    return 0
+  }
+
+  if (command === 'add') {
+    // Read the app's own sign-in, not `current()`: once one account is parked
+    // slot mode governs `current()`, so using it here would re-import the
+    // already-stored account instead of the one the app just switched to.
+    const live = makeStore(variant)
+    const credential = await live.desktopCredential()
+    if (credential === undefined) {
+      process.stderr.write(
+        `dsh-workbuddy-connect: no signed-in ${variant.appName} account found;`
+        + ' sign in once in the desktop app, then run accounts add again\n',
+      )
+      return 1
+    }
+    const slot = await store.save(credential, label === undefined ? {} : { label })
+    if (jsonOutput) {
+      printJson({
+        schemaVersion: JSON_SCHEMA_VERSION,
+        package: 'dsh-workbuddy-connect',
+        version: WORKBUDDY_CONNECT_VERSION,
+        provider: variant.id,
+        added: { id: slot.id, ...slot.label === undefined ? {} : { label: slot.label }, uid: slot.credential.uid },
+        activeId: slot.id,
+      })
+      return 0
+    }
+    process.stdout.write([
+      `${variant.displayName}: stored ${rowLabel({
+        id: slot.id,
+        ...slot.label === undefined ? {} : { label: slot.label },
+        ...slot.credential.nickname === undefined ? {} : { nickname: slot.credential.nickname },
+        uid: slot.credential.uid,
+        domain: slot.credential.domain,
+        expiresAt: new Date(slot.credential.expiresAtMs).toISOString(),
+        active: true,
+        expired: false,
+      })} and selected it`,
+      '',
+    ].join('\n'))
+    return 0
+  }
+
+  if (command === 'use') {
+    const id = operands[0]
+    if (id === undefined) {
+      process.stderr.write('dsh-workbuddy-connect: accounts use needs an account id (see accounts list)\n')
+      return 1
+    }
+    await store.setActive(id)
+    const { rows, activeId } = await accountRows(store)
+    if (jsonOutput) {
+      printJson({
+        schemaVersion: JSON_SCHEMA_VERSION,
+        package: 'dsh-workbuddy-connect',
+        version: WORKBUDDY_CONNECT_VERSION,
+        provider: variant.id,
+        ...activeId === undefined ? {} : { activeId },
+        accounts: rows,
+      })
+      return 0
+    }
+    const active = rows.find(row => row.active)
+    process.stdout.write(
+      `${variant.displayName}: now serving ${active === undefined ? id : rowLabel(active)};`
+      + ' the running plugin picks this up on its next request\n',
+    )
+    return 0
+  }
+
+  if (command === 'rename') {
+    const id = operands[0]
+    if (id === undefined) {
+      process.stderr.write('dsh-workbuddy-connect: accounts rename needs an account id and an optional label\n')
+      return 1
+    }
+    const slot = await store.relabel(id, label)
+    process.stdout.write(`${variant.displayName}: ${slot.id} is now ${slot.label ?? '(unnamed)'}\n`)
+    return 0
+  }
+
+  if (command === 'remove') {
+    const id = operands[0]
+    if (id === undefined) {
+      process.stderr.write('dsh-workbuddy-connect: accounts remove needs an account id (see accounts list)\n')
+      return 1
+    }
+    await store.remove(id)
+    // Removing the active slot hands resolution back to the desktop file
+    // rather than silently promoting another parked account, so the message
+    // says which of the two happened.
+    const stillSelected = await store.isEnabled()
+    process.stdout.write([
+      `${variant.displayName}: removed ${id}`,
+      ...stillSelected ? [] : ['No account is selected now, so the plugin follows the desktop app again.'],
+      '',
+    ].join('\n'))
+    return 0
+  }
+
+  process.stderr.write(
+    `dsh-workbuddy-connect: unknown accounts command ${JSON.stringify(command)};`
+    + ' expected add, list, remove, rename, or use\n',
+  )
+  return 1
+}
+
 /** Execute one boot-free command. */
 export async function run(argv: readonly string[]): Promise<number> {
   if (argv.length === 0 || argv[0] === '--help' || argv[0] === '-h') {
@@ -217,17 +424,19 @@ export async function run(argv: readonly string[]): Promise<number> {
     return 0
   }
   const [rawAction, ...flags] = argv
-  const actions: readonly Action[] = ['doctor', 'logout', 'status']
+  const actions: readonly Action[] = ['accounts', 'doctor', 'logout', 'status']
   if (!actions.includes(rawAction as Action)) {
-    process.stderr.write(`dsh-workbuddy-connect: expected doctor, logout, or status; got ${JSON.stringify(rawAction)}\n`)
+    process.stderr.write(`dsh-workbuddy-connect: expected accounts, doctor, logout, or status; got ${JSON.stringify(rawAction)}\n`)
     return 1
   }
   const action = rawAction as Action
   const jsonOutput = flags.includes('--json')
 
   // `--provider <id>` (or `--provider=<id>`); absent means the CN provider, so
-  // every existing invocation keeps its behaviour.
+  // every existing invocation keeps its behaviour. `--label <text>` names a
+  // slot on `accounts add` / `accounts rename`.
   let providerId: string | undefined
+  let label: string | undefined
   const rest: string[] = []
   for (let index = 0; index < flags.length; index += 1) {
     const flag = flags[index]!
@@ -240,6 +449,15 @@ export async function run(argv: readonly string[]): Promise<number> {
       providerId = flag.slice('--provider='.length)
       continue
     }
+    if (flag === '--label') {
+      label = flags[index + 1]
+      index += 1
+      continue
+    }
+    if (flag.startsWith('--label=')) {
+      label = flag.slice('--label='.length)
+      continue
+    }
     rest.push(flag)
   }
   const variant = providerId === undefined ? CN_VARIANT : variantFor(providerId)
@@ -249,13 +467,18 @@ export async function run(argv: readonly string[]): Promise<number> {
     )
     return 1
   }
-  const unknown = rest.filter(flag => flag !== '--json')
+  const positional = rest.filter(flag => !flag.startsWith('--'))
+  const unknown = rest.filter(flag => flag.startsWith('--') && flag !== '--json')
   if (unknown.length > 0 || (jsonOutput && action === 'logout')) {
     process.stderr.write(`dsh-workbuddy-connect: invalid options for ${action}: ${flags.join(' ')}\n`)
     return 1
   }
   try {
     switch (action) {
+      case 'accounts': {
+        const [command, ...operands] = positional
+        return await accounts(jsonOutput, variant, command, operands, label)
+      }
       case 'doctor':
         return await doctor(jsonOutput, variant)
       case 'status':
