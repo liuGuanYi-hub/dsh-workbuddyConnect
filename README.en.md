@@ -76,13 +76,15 @@ The same UI works unchanged inside the DSH 0.1.5 settings cards:
 
 - **Enterprise credit**: on the CN product, enterprise accounts (non-empty `enterpriseId`) read their cycle quota from the enterprise billing endpoint, and the card shows the enterprise quota with the cycle reset time.
 
+- **Quota check**: the card's account section parks several desktop-app sign-ins and switches between them, and its **Check quota** button sends one minimal request per parked account (`max_tokens: 1`, disconnecting at the first streamed event) to answer "can this account still serve DeepSeek-V4.1-Flash right now": quota available / quota used up / could not decide. A check spends a little credit, so it runs only after you press it and confirm — never automatically. Results are stored with their check time under `$DSH_HOME`, so both the card and `accounts quota` still read them after a restart. "Could not decide" is not "used up": a dead session, a rate limit and a transport failure all land there, and their usual fix is to sign in again rather than switch accounts.
+
 - **Rate**: every model name carries its credits multiplier (e.g. `GLM-5.2 · x0.79`, `Hy3 · x0.00`) in both the `/model` popup and the composer's model dropdown; the rate is display-only and never affects requests.
 
 - **Promo badges**: promo badges (limited-time free, night discount) ride the model name itself (e.g. `Hy4 preview · x0.00 · 限时免费`), visible wherever you pick a model, and the status card collects currently discounted models — per WorkBuddy service data, synced each time DSH starts. The international version's promotions come from the service's `modelPromotions` (with an effective window); once a promotion lapses its badge is withdrawn, and because the service writes the discounted value into the model's own rate field, the original price cannot be reconstructed — the model then reports "price unavailable — refresh to update" instead of repeating the discounted rate or claiming it is free.
 
 ![Settings card showing the plugin](assets/2.png)
 
-The expanded card has three tabs: Status shows the account, token validity, total credit, catalog source, and reasoning-level detection; Context lists each model's context window, and the international version's "use the upstream's largest declared context window" switch lives here (on by default, so DSH sizes context compression to the largest declared window; turn it off to follow the upstream default instead, and the preference persists across restarts); Details shows per-package credit and model offers. The CN and international versions each get their own card.
+The expanded card has three tabs: Status shows the account, token validity, total credit, catalog source, account switching and the quota check, and reasoning-level detection; Context lists each model's context window, and the international version's "use the upstream's largest declared context window" switch lives here (on by default, so DSH sizes context compression to the largest declared window; turn it off to follow the upstream default instead, and the preference persists across restarts); Details shows per-package credit and model offers. The CN and international versions each get their own card.
 
 ![Settings card showing account and remaining credit](assets/3.png)
 
