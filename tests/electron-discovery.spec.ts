@@ -72,6 +72,12 @@ const cleanups: (() => Promise<void>)[] = []
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'wb-electron-discovery-'))
   cleanups.push(async () => { await rm(root, { recursive: true, force: true }) })
+  // The credential store's slot layer resolves `$DSH_HOME/workbuddy-accounts`,
+  // so a test that only names a desktop file and an own-copy would still read
+  // the parked accounts of whoever runs the suite: `status()` would come back
+  // signed-in with a real token instead of the failure under test, and the
+  // assertion diff would print that token into the log.
+  vi.stubEnv('DSH_HOME', root)
 })
 
 afterEach(async () => {

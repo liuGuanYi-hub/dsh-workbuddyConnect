@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { WorkBuddyCredentialStore, desktopAuthCandidatesFor, parseWorkBuddyAuth } from '../src/auth.ts'
 import { FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS, WorkBuddyCatalog } from '../src/catalog.ts'
 import { AI_VARIANT, CN_VARIANT, variantFor, WORKBUDDY_VARIANTS } from '../src/variants.ts'
@@ -19,6 +19,19 @@ const CLEANUP: (() => Promise<void>)[] = []
 afterEach(async () => {
   for (const dispose of CLEANUP.splice(0)) await dispose()
   vi.unstubAllEnvs()
+})
+
+/**
+ * Every test runs against its own empty harness home.
+ *
+ * Naming a desktop file and an own-copy is not enough to isolate a credential
+ * test: the store's slot layer resolves `$DSH_HOME/workbuddy-accounts`, so on a
+ * machine with parked accounts the real one wins over the fixture. The result
+ * is a suite whose outcome depends on who is signed in — and a broken assertion
+ * that prints a live access token into the test log.
+ */
+beforeEach(async () => {
+  vi.stubEnv('DSH_HOME', await tempDir())
 })
 
 async function tempDir(): Promise<string> {
