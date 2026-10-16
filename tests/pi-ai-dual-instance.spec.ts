@@ -111,6 +111,12 @@ function modelFor(provider: string) {
 }
 
 describe('#92 cross-instance: host drives a provider built by another pi-ai copy', () => {
+  // Both tests copy a whole package tree to disk and then cold-import a second
+  // physical copy, so their wall time is I/O and module-resolution bound, not
+  // logic bound: ~1.8s and ~1.1s run alone, and the first has been measured
+  // exceeding vitest's 5000ms default when all 63 files run in parallel (the
+  // failure is `Test timed out in 5000ms`, never an assertion). The budget is
+  // therefore set here rather than left to a default this fixture can outrun.
   it('runs a request end to end through a second-copy provider', async () => {
     const { root, dir } = materialiseSecondCopy()
     try {
@@ -194,7 +200,7 @@ describe('#92 cross-instance: host drives a provider built by another pi-ai copy
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
-  })
+  }, 60_000)
 
   it('the two copies are genuinely distinct module instances', async () => {
     const { root, dir } = materialiseSecondCopy()
@@ -217,5 +223,5 @@ describe('#92 cross-instance: host drives a provider built by another pi-ai copy
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
-  })
+  }, 60_000)
 })
