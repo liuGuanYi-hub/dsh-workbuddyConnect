@@ -10,7 +10,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { WORKBUDDY_ACCOUNTS_PATH, WORKBUDDY_AI_ACCOUNTS_PATH, WORKBUDDY_AI_PROBE_PATH, WORKBUDDY_AI_STATUS_PATH, WORKBUDDY_PROBE_PATH, WORKBUDDY_STATUS_PATH, isWorkBuddySignedOutReasonCode } from '../status-paths.ts'
 import type { WorkBuddyAccountsAction, WorkBuddyWebAccount, WorkBuddyWebAccountsSection, WorkBuddyWebCreditExpiry } from '../status-paths.ts'
-import type { WorkBuddySignedOutReasonCode, WorkBuddyWebModelBadge, WorkBuddyWebProbeSection, WorkBuddyWebStatus, WorkBuddyWebVisibilitySection } from '../status-paths.ts'
+import type { WorkBuddySignedOutReasonCode, WorkBuddyWebModelBadge, WorkBuddyWebProbeSection, WorkBuddyWebQuotaCheck, WorkBuddyWebQuotaCheckSection, WorkBuddyWebStatus, WorkBuddyWebVisibilitySection } from '../status-paths.ts'
 import { isWorkBuddyWebStatus } from './status-document.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
 
@@ -1212,6 +1212,131 @@ function AccountSection({ section, busyId, onCapture, onUse, onRename, onRemove,
   )
 }
 
+/**
+ * The on-demand quota check: one button that asks every parked account whether
+ * it can still serve the model the user actually spends credit on.
+ *
+ * Never automatic. The question is only answerable by spending one real (if
+ * minimal) request per parked account, so a card that fired it on open would
+ * bill the user for a question they did not ask; the button therefore carries
+ * its own confirmation, in the same register the reasoning-effort probe uses.
+ *
+ * Its own block rather than more badges in the account rows, because the two
+ * answer different questions: a row's "quota used up" badge is a refusal the
+ * chat path happened to observe, while these rows are one sweep's verdict about
+ * one model at one instant. Merged into one badge they would contradict each
+ * other, and a sweep's `unknown` — the honest answer whenever a session has
+ * lapsed — has no place on a badge that only knows two states.
+ */
+function QuotaCheckSection({ section, defaultModel, accounts, models, t, onCheck, busy }: {
+  /** The last sweep, or undefined when none has ever run. */
+  section: WorkBuddyWebQuotaCheckSection | undefined
+  /** The model the button will check when no sweep has named one yet. */
+  defaultModel: string
+  /** The parked accounts, for both the row names and the count the confirm asks about. */
+  accounts: readonly WorkBuddyWebAccount[]
+  /** Catalog rows, to name the checked model rather than print its id. */
+  models: readonly WorkBuddyWebModelBadge[] | undefined
+  t: WorkBuddyPluginCardInjected['t']
+  onCheck: () => void
+  busy: boolean
+}): React.ReactNode {
+  const [confirming, setConfirming] = useState(false)
+  // The label names *this* button's request, and `busy` is card-wide — true for
+  // a capture or a refresh too — so it cannot pick the label. Armed on click,
+  // released once the run has actually been seen in flight, exactly as the
+  // probe row does; otherwise a click that batched with an unrelated `busy`
+  // would clear itself before anything was sent.
+  const [running, setRunning] = useState(false)
+  const armed = useRef(false)
+  const isRunning = busy || section?.running === true || running
+  useEffect(() => {
+    if (!running) return
+    if (busy || section?.running === true) {
+      armed.current = true
+      return
+    }
+    if (!armed.current) return
+    armed.current = false
+    setRunning(false)
+  }, [running, busy, section?.running])
+  const target = section?.model ?? defaultModel
+  const modelName = models?.find(model => model.id === target)?.name ?? target
+  const nameOf = (result: WorkBuddyWebQuotaCheck): string => {
+    const account = accounts.find(candidate => candidate.id === result.id)
+    // The live row's name first: a sweep taken before a rename would otherwise
+    // keep showing a name the user has thrown away.
+    return account?.label ?? account?.nickname ?? result.label ?? result.id
+  }
+  return (
+    <div style={quotaListStyle}>
+      <h3 style={quotaTitleStyle}>{t('quotaCheckHeading')}</h3>
+      <p style={bodyStyle}>{t('quotaCheckIntro', { model: modelName })}</p>
+      {section === undefined ? null : (
+        <div style={quotaGroupStyle}>
+          {section.results.map(result => (
+            <div key={result.id} style={modelOfferStyle}>
+              <div style={probeRowStyle}>
+                <span>{nameOf(result)}</span>
+                <span style={probeRowEndStyle}>
+                  <span style={modelBadgeChipStyle}>
+                    {t(result.state === 'available'
+                      ? 'quotaCheckAvailable'
+                      : result.state === 'exhausted' ? 'quotaCheckExhausted' : 'quotaCheckUnknown')}
+                  </span>
+                </span>
+              </div>
+              {/* The reason rides under its own row, not beside the chip: it is
+                  the one case where the reader needs a sentence rather than a
+                  label — `unknown` is a sign-in or transport problem, not a
+                  quota one, and naming it is what stops the user switching
+                  accounts to fix a session. */}
+              {result.state === 'unknown' && result.reason !== undefined
+                ? <span style={modelRateStyle}>{result.reason}</span>
+                : null}
+            </div>
+          ))}
+          <span style={modelRateStyle}>{t('quotaCheckAt', { time: formatTime(section.checkedAt) })}</span>
+        </div>
+      )}
+      {accounts.length === 0 ? <p style={bodyStyle}>{t('quotaCheckEmpty')}</p> : null}
+      {confirming ? (
+        <div style={confirmBoxStyle}>
+          <p style={bodyStyle}>{t('quotaCheckConfirm', { count: accounts.length })}</p>
+          <div style={confirmRowStyle}>
+            <button type="button" style={buttonStyle} onClick={() => { setConfirming(false) }}>
+              {t('cancel')}
+            </button>
+            <button
+              type="button"
+              style={primaryButtonStyle}
+              disabled={isRunning}
+              onClick={() => {
+                setConfirming(false)
+                setRunning(true)
+                onCheck()
+              }}
+            >
+              {t('quotaCheckConfirmAction')}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div style={accountActionsStyle}>
+          <button
+            type="button"
+            style={primaryButtonStyle}
+            disabled={isRunning || accounts.length === 0}
+            onClick={() => { setConfirming(true) }}
+          >
+            {isRunning ? t('quotaCheckChecking') : t('quotaCheckStart')}
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyPluginCardProps) {
   if (t === undefined) throw new Error('WorkBuddy plugin card requires its translation function')
   const [open, setOpen] = useState(false)
@@ -1423,7 +1548,7 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
    * the host never accepts a prompt, a sentinel, or a model outside its own
    * catalog from here.
    */
-  const control = useCallback(async (action: { action: 'probe'; model: string } | { action: 'clear' } | { action: 'set-maximum-context-window'; enabled: boolean } | { action: 'set-model-visibility'; model: string; visible: boolean; account: string }): Promise<void> => {
+  const control = useCallback(async (action: { action: 'probe'; model: string } | { action: 'clear' } | { action: 'set-maximum-context-window'; enabled: boolean } | { action: 'set-model-visibility'; model: string; visible: boolean; account: string } | { action: 'check-quota' }): Promise<void> => {
     const key = status?.status === 'signed-in' ? status.probeKey : undefined
     if (key === undefined) return
     // A visibility toggle runs on its own per-row in-flight set so the
@@ -1468,6 +1593,17 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
           ? String((value as Record<string, unknown>)['reason'])
           : t('requestFailed')
         throw new Error(reason)
+      }
+      // A sweep that did not run must not leave the card showing the rows from
+      // the one before it: the user would read a stale answer as the result of
+      // the click that just spent requests. The refresh below still re-reads the
+      // honest document either way, and the thrown reason lands beside it.
+      if (action.action === 'check-quota'
+        && (typeof value !== 'object' || value === null || (value as Record<string, unknown>)['state'] !== 'checked')) {
+        const message = typeof value === 'object' && value !== null && 'reason' in value
+          ? String((value as Record<string, unknown>)['reason'])
+          : t('requestFailed')
+        throw new Error(message)
       }
       await refresh(controller.signal)
     } catch (error: unknown) {
@@ -1752,15 +1888,37 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
                         * renders no switcher at all.
                         */}
                       {status.accounts === undefined ? null : (
-                        <AccountSection
-                          section={status.accounts}
-                          busyId={accountBusy}
-                          onCapture={captureAccount}
-                          onUse={useAccount}
-                          onRename={renameAccount}
-                          onRemove={removeAccount}
-                          t={t}
-                        />
+                        <>
+                          <AccountSection
+                            section={status.accounts}
+                            busyId={accountBusy}
+                            onCapture={captureAccount}
+                            onUse={useAccount}
+                            onRename={renameAccount}
+                            onRemove={removeAccount}
+                            t={t}
+                          />
+                          {/*
+                            * The quota sweep belongs under the switcher it
+                            * informs: its rows answer "which of these can I
+                            * switch to", and a click that spends one request
+                            * per parked account should sit where that decision
+                            * is made. Rendered only when the host declares the
+                            * capability, so an older host shows no button rather
+                            * than one whose click can only be refused.
+                            */}
+                          {status.quotaCheckModel === undefined ? null : (
+                            <QuotaCheckSection
+                              section={status.quotaCheck}
+                              defaultModel={status.quotaCheckModel}
+                              accounts={status.accounts.accounts}
+                              models={status.models}
+                              t={t}
+                              busy={busy}
+                              onCheck={() => { void control({ action: 'check-quota' }) }}
+                            />
+                          )}
+                        </>
                       )}
                       {status.probe === undefined ? null : (
                         <ProbeSection

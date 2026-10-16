@@ -497,4 +497,107 @@ describe('WorkBuddy account switcher', () => {
       expect(button(renderer, t('accountsUse'))).toBeDefined()
     })
   })
+
+  /**
+   * The quota-check button and its rows.
+   *
+   * Two rules these pin: the button appears only when the host declares the
+   * capability, and it never sends a request until the user has confirmed —
+   * one click spends a real request per parked account.
+   */
+  describe('quota check', () => {
+    const CHECK_MODEL = 'deepseek-v4.1-flash'
+
+    /**
+     * A document with both the parked accounts and the sweep capability.
+     *
+     * The button hangs under the account switcher, so the section needs the
+     * account rows as well as `quotaCheckModel`; `status()` replaces the whole
+     * document, so both have to be named together.
+     */
+    function quotaStatus(overrides: Record<string, unknown> = {}): void {
+      status({
+        accounts: { accounts: [account()], directory: '/tmp/x', canCapture: true },
+        quotaCheckModel: CHECK_MODEL,
+        ...overrides,
+      })
+    }
+
+    it('renders no quota control on a host that cannot sweep', async () => {
+      // The default fixture has no `quotaCheckModel`: an older or slotless host
+      // must show no button rather than one whose click can only be refused.
+      const renderer = await mountCard()
+      expect(button(renderer, t('quotaCheckStart'))).toBeUndefined()
+      expect(textOf(renderer)).not.toContain(t('quotaCheckHeading'))
+    })
+
+    it('offers the button once the host declares the model it checks', async () => {
+      quotaStatus()
+      const renderer = await mountCard()
+      expect(button(renderer, t('quotaCheckStart'))).toBeDefined()
+      // No result rows before a check has run — an empty list would read as a
+      // check that found nothing, which is the opposite of what happened.
+      expect(textOf(renderer)).not.toContain(t('quotaCheckAvailable'))
+    })
+
+    it('asks for confirmation before spending any request', async () => {
+      quotaStatus()
+      const renderer = await mountCard()
+      const start = button(renderer, t('quotaCheckStart'))
+      expect(start).toBeDefined()
+
+      await act(async () => { start!.props.onClick() })
+      expect(textOf(renderer)).toContain(t('quotaCheckConfirm').replace('{count}', '1'))
+      // The whole point of the confirmation: nothing has left the process yet.
+      expect(posts).toHaveLength(0)
+    })
+
+    it('sends the sweep on confirmation and shows the results it comes back with', async () => {
+      quotaStatus()
+      const renderer = await mountCard()
+      await act(async () => { button(renderer, t('quotaCheckStart'))!.props.onClick() })
+      const confirm = button(renderer, t('quotaCheckConfirmAction'))
+      expect(confirm).toBeDefined()
+
+      // The document the host would answer with once the sweep has landed.
+      postResponse = {
+        ok: true,
+        body: { state: 'checked', model: CHECK_MODEL },
+      }
+      quotaStatus({
+        quotaCheck: {
+          model: CHECK_MODEL,
+          checkedAt: 1_800_000_000_000,
+          running: false,
+          results: [
+            { id: 'acct-1', state: 'available', status: 200, checkedAt: 1_800_000_000_000 },
+            { id: 'acct-9', state: 'unknown', status: 401, reason: 'status 401: session dead', checkedAt: 1_800_000_000_000 },
+          ],
+        },
+      })
+      await act(async () => { confirm!.props.onClick() })
+      const sweep = posts.find(post => (post.body as { action?: string }).action === 'check-quota')
+      expect(sweep).toBeDefined()
+      expect(sweep!.url).toContain('probe')
+      await act(async () => { released.forEach(release => { release() }) })
+
+      const text = textOf(renderer)
+      expect(text).toContain(t('quotaCheckAvailable'))
+      expect(text).toContain(t('quotaCheckUnknown'))
+      // `unknown` carries the upstream's reason: the user's fix there is to
+      // sign in again, not to switch accounts.
+      expect(text).toContain('session dead')
+    })
+
+    it('reports a refused sweep instead of leaving the old rows looking current', async () => {
+      quotaStatus()
+      const renderer = await mountCard()
+      await act(async () => { button(renderer, t('quotaCheckStart'))!.props.onClick() })
+      const confirm = button(renderer, t('quotaCheckConfirmAction'))
+      postResponse = { ok: true, body: { state: 'failed', reason: 'unknown model: glm-9' } }
+      await act(async () => { confirm!.props.onClick() })
+      await act(async () => { released.forEach(release => { release() }) })
+      expect(textOf(renderer)).toContain('unknown model: glm-9')
+    })
+  })
 })
