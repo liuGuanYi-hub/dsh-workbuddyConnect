@@ -105,9 +105,6 @@ function run(bin: string, args: readonly string[], timeoutMs: number, maxBytes: 
   })
 }
 
-/** The missing-key diagnostic `reg.exe` itself emits, in either spelling; nothing else may count. */
-const REG_KEY_MISSING = /unable to find the specified registry key|系统找不到指定的注册表项|系統找不到指定的登錄機碼/u
-
 describe.skipIf(!IS_WINDOWS)('WINDOWS-ONLY real-process integration: PowerShell 5.1 -Command root binding (#105/#106/#107)', () => {
   beforeAll(async () => {
     // Real `reg add` through the real SystemRoot path: the current user's own
@@ -122,9 +119,17 @@ describe.skipIf(!IS_WINDOWS)('WINDOWS-ONLY real-process integration: PowerShell 
   afterAll(async () => {
     // The one key this suite owns is removed no matter how the tests ended;
     // "already absent" also passes, anything else fails the suite.
+    //
+    // Absence is established by re-querying, not by reading reg.exe's words:
+    // that diagnostic is written in the console's code page (GBK on a zh-CN
+    // Windows), so matching a UTF-8 decode of it is the exact trap the
+    // production path was just fixed for — and it would make a successful
+    // cleanup look like a failed one depending on the machine's locale.
     const deleted = await run(REG_EXE, ['delete', TEST_KEY, '/f'], 15_000, 64 * 1024)
-    const alreadyAbsent = deleted.code === 1 && REG_KEY_MISSING.test(deleted.stderr.toString('utf8'))
-    expect(deleted.code === 0 || alreadyAbsent, 'the test registry key must be deleted').toBe(true)
+    const stillThere = deleted.code === 0
+      ? false
+      : (await run(REG_EXE, ['query', TEST_KEY], 15_000, 64 * 1024)).code === 0
+    expect(deleted.code === 0 || !stillThere, 'the test registry key must be deleted').toBe(true)
   }, 60_000)
 
   it('runs real Windows PowerShell 5.1 from the exact WindowsPowerShell\\v1.0 path', async () => {
