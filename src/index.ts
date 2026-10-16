@@ -844,8 +844,10 @@ export function apply(ctx: Context, config: Config): void {
         // Parked accounts and the active pointer, so the card can render a
         // switcher without a second request. Absent when this host has no
         // account store; a store with no slots answers an empty list, which is
-        // what lets the card offer the first capture.
-        accounts: () => workBuddyAccountsSection(runtime.accountStore, captureAvailability),
+        // what lets the card offer the first capture. Rows also carry the
+        // recorded exhaustion verdict, so an account that has run dry is marked
+        // in the list the user switches from.
+        accounts: () => workBuddyAccountsSection(runtime.accountStore, captureAvailability, runtime.quotaStore),
         ...runtime.variant.id === CN_VARIANT.id ? {} : {
           // Presence of this field in the document is the card's capability
           // signal, so the getter answers `undefined` — not merely `false` —

@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { workBuddyAccountsHandler, workBuddyAccountsSection } from '../src/accounts-route.ts'
 import { WorkBuddyAccountStore } from '../src/accounts-store.ts'
+import { WorkBuddyQuotaStore } from '../src/quota-state.ts'
 import type { WorkBuddyCredential } from '../src/auth.ts'
 import { CN_VARIANT } from '../src/variants.ts'
 
@@ -306,5 +307,67 @@ describe('workBuddyAccountsSection', () => {
     const section = await workBuddyAccountsSection(store, async () => ({ ok: true }))
     expect(JSON.stringify(section)).not.toContain('at-uid-1')
     expect(JSON.stringify(section)).not.toContain('rt-uid-1')
+  })
+
+  describe('quota verdicts', () => {
+    /** A quota store in the temp home `tempHome()` just installed. */
+    function quotaIn(home: string): WorkBuddyQuotaStore {
+      return new WorkBuddyQuotaStore({ path: join(home, 'quota.json') })
+    }
+
+    it('omits the verdict fields entirely without a quota store', async () => {
+      await tempHome()
+      const store = new WorkBuddyAccountStore({ variant: CN_VARIANT })
+      await store.save(credential({ uid: 'uid-1' }))
+      const section = await workBuddyAccountsSection(store, async () => ({ ok: true }))
+      // Absent, not false: a host with no quota store must not have the card
+      // claim every account is fine.
+      expect(section?.accounts[0]).not.toHaveProperty('exhausted')
+      expect(section?.accounts[0]).not.toHaveProperty('exhaustedAt')
+    })
+
+    it('marks only the refused account', async () => {
+      const home = await tempHome()
+      const store = new WorkBuddyAccountStore({ variant: CN_VARIANT })
+      await store.save(credential({ uid: 'uid-1', nickname: '一号' }), { label: '工作号' })
+      await store.save(credential({ uid: 'uid-2', nickname: '二号' }), { label: '个人号', activate: false })
+
+      const quota = quotaIn(home)
+      const at = Date.now()
+      quota.recordExhausted('uid-1:')
+
+      const section = await workBuddyAccountsSection(store, async () => ({ ok: true }), quota)
+      const byLabel = new Map(section?.accounts.map(row => [row.label, row]))
+      expect(byLabel.get('工作号')).toMatchObject({ exhausted: true })
+      expect(byLabel.get('工作号')?.exhaustedAt).toBeGreaterThanOrEqual(at)
+      expect(byLabel.get('个人号')?.exhausted).toBeUndefined()
+    })
+
+    it('reports a recovered account as unmarked', async () => {
+      const home = await tempHome()
+      const store = new WorkBuddyAccountStore({ variant: CN_VARIANT })
+      await store.save(credential({ uid: 'uid-1' }), { label: '工作号' })
+
+      const quota = quotaIn(home)
+      quota.recordExhausted('uid-1:')
+      quota.clear('uid-1:')
+
+      const section = await workBuddyAccountsSection(store, async () => ({ ok: true }), quota)
+      expect(section?.accounts[0]?.exhausted).toBeUndefined()
+    })
+
+    it('leaves an account with no uid unmarked rather than sharing a bucket', async () => {
+      const home = await tempHome()
+      const store = new WorkBuddyAccountStore({ variant: CN_VARIANT })
+      await store.save(credential({ uid: '' }), { label: '匿名号' })
+
+      const quota = quotaIn(home)
+      // Recording against the empty identity is refused by the store, so no
+      // verdict can ever be attributed to a uid-less account.
+      expect(quota.recordExhausted(undefined)).toBe(false)
+
+      const section = await workBuddyAccountsSection(store, async () => ({ ok: true }), quota)
+      expect(section?.accounts[0]?.exhausted).toBeUndefined()
+    })
   })
 })

@@ -5,6 +5,7 @@ import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { WorkBuddyCredentialStore, workbuddyOwnAuthPath } from './auth.ts'
 import { WorkBuddyAccountError, WorkBuddyAccountStore } from './accounts-store.ts'
+import { WorkBuddyQuotaStore, quotaAccountOf, workbuddyQuotaPath } from './quota-state.ts'
 import { WorkBuddyUpstreamClient } from './upstream.ts'
 import { FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS } from './catalog.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
@@ -234,23 +235,41 @@ interface AccountRow {
   expiresAt: string
   active: boolean
   expired: boolean
+  /** Whether the upstream has refused this account for insufficient credit. */
+  quota: 'ok' | 'exhausted'
+  /** When that refusal was last observed, ISO-8601; only when `exhausted`. */
+  exhaustedAt?: string
 }
 
 /** Render slots plus the active pointer for `accounts list --json`. */
-async function accountRows(store: WorkBuddyAccountStore): Promise<{ rows: AccountRow[], activeId?: string }> {
+async function accountRows(
+  store: WorkBuddyAccountStore,
+  quota: WorkBuddyQuotaStore,
+): Promise<{ rows: AccountRow[], activeId?: string }> {
   const activeId = await store.activeId()
   const summaries = await store.summaries()
   return {
-    rows: summaries.map(summary => ({
-      id: summary.id,
-      ...summary.label === undefined ? {} : { label: summary.label },
-      ...summary.nickname === undefined ? {} : { nickname: summary.nickname },
-      uid: summary.uid,
-      domain: summary.domain,
-      expiresAt: new Date(summary.expiresAtMs).toISOString(),
-      active: summary.active,
-      expired: summary.expired,
-    })),
+    rows: summaries.map((summary) => {
+      const status = quota.status(quotaAccountOf(summary))
+      const exhausted = status.state === 'exhausted'
+      return {
+        id: summary.id,
+        ...summary.label === undefined ? {} : { label: summary.label },
+        ...summary.nickname === undefined ? {} : { nickname: summary.nickname },
+        uid: summary.uid,
+        domain: summary.domain,
+        expiresAt: new Date(summary.expiresAtMs).toISOString(),
+        active: summary.active,
+        expired: summary.expired,
+        // Always stated on the CLI, unlike the status document's optional
+        // fields: a terminal shows one account per line, so there is room to
+        // say "not observed" instead of leaving the reader to infer it.
+        quota: exhausted ? 'exhausted' : 'ok',
+        ...status.exhaustedAtMs === undefined
+          ? {}
+          : { exhaustedAt: new Date(status.exhaustedAtMs).toISOString() },
+      }
+    }),
     ...activeId === undefined ? {} : { activeId },
   }
 }
@@ -277,9 +296,12 @@ async function accounts(
   label: string | undefined,
 ): Promise<number> {
   const store = new WorkBuddyAccountStore({ variant })
+  // One reader for every listing command: `list` and `use` both report the
+  // recorded quota verdicts, and they must not disagree within one invocation.
+  const quota = new WorkBuddyQuotaStore(workbuddyQuotaPath(variant.quotaFilename))
 
   if (command === undefined || command === 'list') {
-    const { rows, activeId } = await accountRows(store)
+    const { rows, activeId } = await accountRows(store, quota)
     if (jsonOutput) {
       printJson({
         schemaVersion: JSON_SCHEMA_VERSION,
@@ -304,9 +326,13 @@ async function accounts(
       `${variant.displayName} accounts (${rows.length}):`,
       ...rows.map(row => `  ${row.active ? '*' : ' '} ${rowLabel(row)}`
         + `${row.nickname === undefined || row.label === undefined ? '' : ` as ${row.nickname}`}`
-        + ` — token ${row.expired ? 'expired' : `expires ${row.expiresAt}`}`),
+        + ` — token ${row.expired ? 'expired' : `expires ${row.expiresAt}`}`
+        + `${row.quota === 'exhausted' ? ` — QUOTA EXHAUSTED${row.exhaustedAt === undefined ? '' : ` since ${row.exhaustedAt}`}` : ''}`),
       '',
       '(* = currently served; switch with: accounts use <id>)',
+      ...rows.some(row => row.quota === 'exhausted')
+        ? ['', 'QUOTA EXHAUSTED = the upstream refused this account for insufficient credit; switch to another one.']
+        : [],
       '',
     ].join('\n'))
     return 0
@@ -347,6 +373,9 @@ async function accounts(
         expiresAt: new Date(slot.credential.expiresAtMs).toISOString(),
         active: true,
         expired: false,
+        // A freshly captured account has just been read from the desktop app, so
+        // any verdict from a previous life of this slot is stale by definition.
+        quota: quota.status(quotaAccountOf(slot.credential)).state === 'exhausted' ? 'exhausted' : 'ok',
       })} and selected it`,
       '',
     ].join('\n'))
@@ -360,7 +389,7 @@ async function accounts(
       return 1
     }
     await store.setActive(id)
-    const { rows, activeId } = await accountRows(store)
+    const { rows, activeId } = await accountRows(store, quota)
     if (jsonOutput) {
       printJson({
         schemaVersion: JSON_SCHEMA_VERSION,

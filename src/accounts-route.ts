@@ -22,6 +22,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { WorkBuddyAccountError } from './accounts-store.ts'
 import type { WorkBuddyAccountStore } from './accounts-store.ts'
+import { quotaAccountOf, type WorkBuddyQuotaStore } from './quota-state.ts'
 import type { WorkBuddyCredential } from './auth.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
 import { accountsPathFor } from './status-paths.ts'
@@ -115,21 +116,35 @@ function parseAction(text: string): WorkBuddyAccountsAction | undefined {
  *
  * Exported so the status route and this one render the identical shape; a
  * second implementation would be free to drift from it.
+ *
+ * @param accounts - the variant's slot store, or undefined when it has none.
+ * @param canCapture - answers whether the desktop app holds a readable sign-in.
+ * @param quota - recorded exhaustion verdicts. When present, each row carries
+ *   whether that account has been refused and when; absent, every row omits the
+ *   fields and the card renders no quota badge at all rather than claiming
+ *   every account is fine.
  */
 export async function workBuddyAccountsSection(
   accounts: WorkBuddyAccountStore | undefined,
   canCapture: () => Promise<{ ok: boolean, hint?: string }>,
+  quota?: WorkBuddyQuotaStore,
 ): Promise<WorkBuddyWebAccountsSection | undefined> {
   if (accounts === undefined) return undefined
   const summaries = await accounts.summaries()
-  const rows: WorkBuddyWebAccount[] = summaries.map(summary => ({
-    id: summary.id,
-    ...summary.label === undefined ? {} : { label: summary.label },
-    ...summary.nickname === undefined ? {} : { nickname: summary.nickname },
-    active: summary.active,
-    expired: summary.expired,
-    expiresAt: summary.expiresAtMs,
-  }))
+  const rows: WorkBuddyWebAccount[] = summaries.map((summary) => {
+    const status = quota?.status(quotaAccountOf(summary))
+    const exhausted = status?.state === 'exhausted'
+    return {
+      id: summary.id,
+      ...summary.label === undefined ? {} : { label: summary.label },
+      ...summary.nickname === undefined ? {} : { nickname: summary.nickname },
+      active: summary.active,
+      expired: summary.expired,
+      expiresAt: summary.expiresAtMs,
+      ...exhausted ? { exhausted: true } : {},
+      ...status?.exhaustedAtMs === undefined ? {} : { exhaustedAt: status.exhaustedAtMs },
+    }
+  })
   const capture = await canCapture()
   return {
     accounts: rows,

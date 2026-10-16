@@ -62,6 +62,19 @@ export interface WorkBuddyWebAccount {
   expired: boolean
   /** Access-token expiry, epoch milliseconds. */
   expiresAt: number
+  /**
+   * Whether the upstream has refused this account for insufficient credit and
+   * the verdict has not aged out.
+   *
+   * `undefined` means *no refusal has been recorded*, which is not the same as
+   * "this account has quota": the plugin only learns an account is spent by
+   * being refused, and it never polls for a balance on the chat path. The card
+   * renders the difference rather than collapsing both into one badge, so a
+   * user reading the list is not misled about what was actually observed.
+   */
+  exhausted?: boolean
+  /** When exhaustion was last observed, epoch milliseconds. */
+  exhaustedAt?: number
 }
 
 /**

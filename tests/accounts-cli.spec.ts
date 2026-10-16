@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { run } from '../src/bin.ts'
 import { WorkBuddyAccountStore } from '../src/accounts-store.ts'
+import { WorkBuddyQuotaStore, quotaAccountOf, WORKBUDDY_QUOTA_FILENAME } from '../src/quota-state.ts'
 import { CN_VARIANT } from '../src/variants.ts'
 
 /**
@@ -123,6 +124,65 @@ describe('accounts list', () => {
     expect(out).not.toContain('at-uid-1')
     expect(out).not.toContain('rt-uid-1')
     expect(JSON.stringify(json)).not.toContain('rt-uid-1')
+  })
+
+  describe('quota verdicts', () => {
+    /** Record a refusal the way the shim does, against one account. */
+    async function recordExhausted(home: string, uid: string): Promise<void> {
+      const quota = new WorkBuddyQuotaStore({ path: join(home, WORKBUDDY_QUOTA_FILENAME) })
+      quota.recordExhausted(quotaAccountOf({ uid }))
+    }
+
+    it('reports every account as ok when nothing has been refused', async () => {
+      const { authFile } = await setup()
+      await signInAs(authFile, 'uid-1', { nickname: '一号' })
+      await capture(['accounts', 'add', '--label', '国内一号'])
+
+      const { json, out } = await capture(['accounts', 'list', '--json'])
+      const rows = json['accounts'] as { quota: string, exhaustedAt?: string }[]
+      expect(rows[0]?.quota).toBe('ok')
+      expect(rows[0]?.exhaustedAt).toBeUndefined()
+      // Nothing to explain, so the legend stays out of the output.
+      expect(out).not.toContain('QUOTA EXHAUSTED')
+    })
+
+    it('marks the refused account in both output modes', async () => {
+      const { home, authFile } = await setup()
+      await signInAs(authFile, 'uid-1', { nickname: '一号' })
+      await capture(['accounts', 'add', '--label', '国内一号'])
+      await signInAs(authFile, 'uid-2', { nickname: '二号' })
+      await capture(['accounts', 'add', '--label', '国内二号'])
+
+      await recordExhausted(home, 'uid-1')
+
+      const { json } = await capture(['accounts', 'list', '--json'])
+      const rows = json['accounts'] as { label: string, quota: string, exhaustedAt?: string }[]
+      const byLabel = new Map(rows.map(row => [row.label, row]))
+      expect(byLabel.get('国内一号')?.quota).toBe('exhausted')
+      expect(byLabel.get('国内一号')?.exhaustedAt).toBeDefined()
+      expect(byLabel.get('国内二号')?.quota).toBe('ok')
+
+      const { out } = await capture(['accounts', 'list'])
+      expect(out).toContain('QUOTA EXHAUSTED')
+      expect(out).toContain('switch to another one')
+    })
+
+    it('stops marking an account once its verdict is cleared', async () => {
+      const { home, authFile } = await setup()
+      await signInAs(authFile, 'uid-1', { nickname: '一号' })
+      await capture(['accounts', 'add', '--label', '国内一号'])
+
+      await recordExhausted(home, 'uid-1')
+      expect((await capture(['accounts', 'list', '--json'])).json['accounts'])
+        .toMatchObject([{ quota: 'exhausted' }])
+
+      // A later successful request clears it, exactly as the shim does.
+      new WorkBuddyQuotaStore({ path: join(home, WORKBUDDY_QUOTA_FILENAME) })
+        .clear(quotaAccountOf({ uid: 'uid-1' }))
+
+      expect((await capture(['accounts', 'list', '--json'])).json['accounts'])
+        .toMatchObject([{ quota: 'ok' }])
+    })
   })
 })
 

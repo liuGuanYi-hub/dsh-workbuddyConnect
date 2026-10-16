@@ -370,6 +370,25 @@ const accountTagStyle: CSSProperties = {
   color: 'var(--dsw-alias-label-secondary)',
   background: 'var(--dsw-alias-fill-secondary, rgba(127, 127, 127, 0.12))',
 }
+/**
+ * The "quota used up" badge.
+ *
+ * Deliberately not {@link accountTagStyle}: an expired session and an exhausted
+ * quota both leave an account unusable, but only one of them is fixed by
+ * switching, and this is the badge a user scans the list for. It borrows the
+ * theme's danger token rather than a hard-coded red so it stays legible in both
+ * light and dark cards, and falls back to a colour that still reads as a
+ * warning if the token is absent.
+ */
+const accountExhaustedTagStyle: CSSProperties = {
+  fontSize: 11,
+  lineHeight: '16px',
+  padding: '0 6px',
+  borderRadius: 4,
+  whiteSpace: 'nowrap',
+  color: 'var(--dsw-alias-label-danger, #b42318)',
+  background: 'var(--dsw-alias-fill-danger, rgba(180, 35, 24, 0.12))',
+}
 const accountActionsStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
@@ -441,6 +460,30 @@ function progressFillStyle(percent: number): CSSProperties {
     height: '100%',
     borderRadius: 'inherit',
     background: 'var(--dsw-alias-brand-primary, #1677ff)',
+  }
+}
+
+/**
+ * Render the moment an account was last refused, for the badge's tooltip.
+ *
+ * Uses the browser's own locale and formatters rather than the card's
+ * translation table: a timestamp is data, not copy, and every locale already
+ * knows how to spell its own dates. Falls back to an ISO-ish rendering when
+ * `Intl` or the locale is unavailable, so the tooltip degrades to something
+ * still readable instead of throwing inside render.
+ */
+function formatExhaustedAt(epochMs: number): string {
+  const date = new Date(epochMs)
+  if (!Number.isFinite(date.getTime())) return ''
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      month: 'numeric',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(date)
+  } catch {
+    return date.toISOString().slice(0, 16).replace('T', ' ')
   }
 }
 
@@ -1068,6 +1111,27 @@ function AccountSection({ section, busyId, onCapture, onUse, onRename, onRemove,
                         {nameOf(account)}
                         {account.active ? <span style={accountTagStyle}>{t('accountsActive')}</span> : null}
                         {account.expired ? <span style={accountTagStyle}>{t('accountsExpired')}</span> : null}
+                        {/*
+                          * The quota badge sits after the session tags because
+                          * the two answer different questions: `expired` means
+                          * the sign-in needs refreshing, `exhausted` means the
+                          * account is fine but has nothing left to spend. A
+                          * user scanning for "which one can I switch to" reads
+                          * the latter, so it gets the warning colour rather
+                          * than the neutral tag styling.
+                          */}
+                        {account.exhausted
+                          ? (
+                            <span
+                              style={accountExhaustedTagStyle}
+                              title={account.exhaustedAt === undefined
+                                ? undefined
+                                : t('accountsExhaustedAt', { time: formatExhaustedAt(account.exhaustedAt) })}
+                            >
+                              {t('accountsExhausted')}
+                            </span>
+                            )
+                          : null}
                       </span>
                       <span style={accountActionsStyle}>
                         <button

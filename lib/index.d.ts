@@ -702,6 +702,15 @@ interface WorkBuddyVariant {
    * answer for the other's picker.
    */
   visibilityFilename: string;
+  /**
+   * Basename of the plugin-owned per-account quota-verdict file under
+   * `$DSH_HOME`.
+   *
+   * One per variant, like the others: the two products bill against separate
+   * upstream accounts, so an exhaustion recorded on the CN endpoint must never
+   * mark a parked international account as spent.
+   */
+  quotaFilename: string;
   /** Same-origin status route consumed by this variant's card. */
   statusPath: string;
   /** Same-origin probe-control route consumed by this variant's card. */
@@ -1464,6 +1473,88 @@ declare class WorkBuddyProbeStore {
   private persist;
 }
 //#endregion
+//#region src/quota-state.d.ts
+/** One account's quota status, as the card renders it. */
+interface WorkBuddyQuotaStatus {
+  /**
+   * `exhausted` when the upstream refused this account for insufficient credit
+   * and the verdict has not aged out; `ok` otherwise.
+   *
+   * There is deliberately no `unknown` here: an account with no recorded
+   * refusal is one the plugin has no contrary evidence about, and calling that
+   * `ok` in the card (rather than a third state) keeps the common case
+   * readable. A card that wants to say "we never asked" renders the absence of
+   * a row instead.
+   */
+  state: 'ok' | 'exhausted';
+  /** When exhaustion was last observed, epoch ms; only for `exhausted`. */
+  exhaustedAtMs?: number;
+  /** How many refusals have been recorded, for diagnostics. */
+  count?: number;
+}
+/** Options for {@link WorkBuddyQuotaStore}. */
+interface WorkBuddyQuotaStoreOptions {
+  /** Explicit state-file path, overriding the `$DSH_HOME` default. */
+  path?: string;
+  /**
+   * Verdict lifetime in milliseconds; overridden only by tests, which need a
+   * deterministic horizon rather than a twelve-hour one.
+   */
+  ttlMs?: number;
+}
+/**
+ * Recorded per-account quota refusals, read once and written atomically.
+ *
+ * Writes are best-effort by design: this store sits on the *chat path*, where a
+ * refusal is already being reported to the user. Failing the request a second
+ * time because a diagnostic file could not be written would trade a useful
+ * error for a useless one, so {@link recordExhausted} reports whether it
+ * persisted and never throws.
+ */
+declare class WorkBuddyQuotaStore {
+  private readonly path;
+  private readonly ttlMs;
+  private accounts;
+  constructor(options?: WorkBuddyQuotaStoreOptions | string);
+  /** Resolved state-file path, for the CLI and tests. */
+  filePath(): string;
+  private load;
+  /**
+   * One account's status, with an aged-out verdict reported as `ok`.
+   *
+   * The expiry is applied on read rather than by rewriting the file, so a
+   * stale verdict costs nothing until the account is actually consulted again.
+   *
+   * @param account - `uid:enterpriseId` key, or undefined for an unkeyable account.
+   */
+  status(account: string | undefined): WorkBuddyQuotaStatus;
+  /** Whether this account has a live exhaustion verdict. */
+  isExhausted(account: string | undefined): boolean;
+  /**
+   * Record that the upstream refused this account for insufficient credit.
+   *
+   * The observation count accumulates across a session so a later diagnostic
+   * can tell "refused once" from "refused repeatedly", while the timestamp
+   * moves forward — each new refusal restarts the verdict's life, because the
+   * upstream has just re-confirmed it.
+   *
+   * @returns whether the verdict was persisted. A false answer is not an error
+   *   worth failing a chat request over; the caller may log it.
+   */
+  recordExhausted(account: string | undefined): boolean;
+  /**
+   * Drop one account's verdict, so a recovered account reads as usable again.
+   *
+   * Called when a request for that account succeeds: a cycle reset is invisible
+   * to the plugin, and the first successful call afterwards is the earliest
+   * honest evidence that the refusal no longer holds.
+   *
+   * @returns whether anything changed.
+   */
+  clear(account: string | undefined): boolean;
+  private persist;
+}
+//#endregion
 //#region src/shim.d.ts
 /** Minimal logger surface the plugin context already provides. */
 interface ShimLogger {
@@ -1492,6 +1583,18 @@ interface WorkBuddyShimOptions {
   client: Pick<WorkBuddyUpstreamClient, 'chatStream'>;
   catalog: WorkBuddyCatalog;
   logger?: ShimLogger;
+  /**
+   * Recorded quota refusals. When present, a `hard_credit` failure is recorded
+   * against the account that produced it, and a later success clears the
+   * verdict for the account that succeeded.
+   */
+  quota?: WorkBuddyQuotaStore;
+  /**
+   * This variant's parked accounts, consulted only to name a concrete
+   * alternative in the exhaustion hint. Absent on a host with no slot store,
+   * where the hint falls back to describing the capture flow.
+   */
+  accounts?: WorkBuddyAccountStore;
 }
 /**
  * Start the loopback endpoint. Requests carry any bearer; the loopback bind

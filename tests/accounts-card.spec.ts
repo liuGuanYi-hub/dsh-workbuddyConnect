@@ -406,4 +406,95 @@ describe('WorkBuddy account switcher', () => {
     expect(button(renderer, t('accountsUse'))).toBeUndefined()
     expect(button(renderer, t('accountsRename'))).toBeDefined()
   })
+
+  describe('quota badges', () => {
+    it('marks an account the upstream refused for insufficient credit', async () => {
+      status({
+        accounts: {
+          accounts: [
+            account({ id: 'acct-1', label: '工作号', active: true, exhausted: true, exhaustedAt: Date.now() }),
+            account({ id: 'acct-2', label: '个人号', active: false }),
+          ],
+          directory: '/tmp/x',
+          canCapture: true,
+        },
+      })
+      const renderer = await mountCard()
+      const text = textOf(renderer)
+      expect(text).toContain(t('accountsExhausted'))
+      // The badge belongs to the refused row only; the other account must stay
+      // unmarked, or the list stops telling the user which one to switch to.
+      expect(text.match(new RegExp(t('accountsExhausted'), 'gu'))).toHaveLength(1)
+      expect(text).toContain('个人号')
+    })
+
+    it('renders no badge when no verdict has been recorded', async () => {
+      // The status document omits the fields for an account with no refusal;
+      // an absent verdict is not a claim that the account has quota, so the
+      // card must stay silent rather than showing an "available" badge.
+      const renderer = await mountCard()
+      expect(textOf(renderer)).not.toContain(t('accountsExhausted'))
+    })
+
+    it('treats an explicit exhausted: false as no badge', async () => {
+      status({
+        accounts: {
+          accounts: [account({ exhausted: false })],
+          directory: '/tmp/x',
+          canCapture: true,
+        },
+      })
+      const renderer = await mountCard()
+      expect(textOf(renderer)).not.toContain(t('accountsExhausted'))
+    })
+
+    it('shows when the refusal was observed as a tooltip', async () => {
+      const at = new Date('2026-10-16T09:30:00Z').getTime()
+      status({
+        accounts: {
+          accounts: [account({ exhausted: true, exhaustedAt: at })],
+          directory: '/tmp/x',
+          canCapture: true,
+        },
+      })
+      const renderer = await mountCard()
+      const badge = renderer.root.findAll(node => node.children.join('') === t('accountsExhausted'))[0]
+      expect(badge).toBeDefined()
+      const title = String((badge!.props as { title?: string }).title ?? '')
+      // The placeholder was filled in, and the tooltip is the localized
+      // sentence rather than a raw epoch number.
+      expect(title).not.toContain('{time}')
+      expect(title).not.toBe('')
+      expect(title).not.toBe(String(at))
+    })
+
+    it('renders the badge without a tooltip when no timestamp was sent', async () => {
+      status({
+        accounts: {
+          accounts: [account({ exhausted: true })],
+          directory: '/tmp/x',
+          canCapture: true,
+        },
+      })
+      const renderer = await mountCard()
+      const badge = renderer.root.findAll(node => node.children.join('') === t('accountsExhausted'))[0]
+      expect(badge).toBeDefined()
+      expect((badge!.props as { title?: string }).title).toBeUndefined()
+    })
+
+    it('keeps the switch control available for an exhausted account', async () => {
+      // Marking a row is guidance, never a lock: the user may still switch to
+      // an account the plugin believes is spent, because only they know whether
+      // its cycle has reset.
+      status({
+        accounts: {
+          accounts: [account({ id: 'acct-2', label: '个人号', active: false, exhausted: true })],
+          directory: '/tmp/x',
+          canCapture: true,
+        },
+      })
+      const renderer = await mountCard()
+      expect(button(renderer, t('accountsUse'))).toBeDefined()
+    })
+  })
 })
