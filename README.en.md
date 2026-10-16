@@ -109,6 +109,10 @@ dsh plugin --profile web exec dsh-workbuddy-connect doctor --provider workbuddy-
 
 `logout` removes only that version's plugin-owned credential copy. It leaves the desktop app's own sign-in alone and does not promise the model group will disappear (the app's credential file still supplies one).
 
+`accounts` manages parked sign-ins: `accounts list` (`*` marks the account currently being served), `accounts add [--label <name>]` (stores whichever account the desktop app is signed into right now), `accounts use <id>`, `accounts rename <id> [--label <name>]`, `accounts remove <id>`, and `accounts quota`.
+
+`accounts quota` **only reads** the result of the last quota check. The check itself starts from the card's account section: it sends one minimal request per parked account (`max_tokens: 1`, disconnecting at the first streamed event), which spends a little credit — so it is never automatic and never started from the command line. The answer is written to `.workbuddy-quota-check.json` under `$DSH_HOME` (`.workbuddy-ai-quota-check.json` for the international version), so it survives a restart and another process, and `--json` gives the machine-readable form. Each account reports `available` (the upstream accepted a request), `exhausted` (refused for insufficient credit), or `unknown` (the check could not decide: a dead session, a rate limit, a transport failure). **`unknown` is not a spent account** — its usual fix is to sign in again, not to switch accounts.
+
 ## Known limitations
 
 - Verified on macOS with the DSH Web / Desktop / TUI profiles (as of 0.3.2 this requires `0.1.5-rc.1`+ and Node 22+; TUI requires the terminal UI package `0.10.0-beta.5` or newer — see the Install section). Windows probes Local and Roaming AppData in order; WSL first reads credentials from the mounted Windows user profile. If the Windows and Linux user names differ and Windows environment variables are not forwarded into WSL, point `WORKBUDDY_AUTH_FILE` (or `WORKBUDDY_AI_AUTH_FILE` for the international version) at the actual file.

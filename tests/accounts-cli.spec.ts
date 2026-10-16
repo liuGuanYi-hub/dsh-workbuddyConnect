@@ -3,8 +3,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { run } from '../src/bin.ts'
-import { WorkBuddyAccountStore } from '../src/accounts-store.ts'
+import { WorkBuddyAccountStore, slotIdForUid } from '../src/accounts-store.ts'
 import { WorkBuddyQuotaStore, quotaAccountOf, WORKBUDDY_QUOTA_FILENAME } from '../src/quota-state.ts'
+import { WorkBuddyQuotaCheckStore, WORKBUDDY_QUOTA_CHECK_FILENAME } from '../src/quota-check-store.ts'
 import { CN_VARIANT } from '../src/variants.ts'
 
 /**
@@ -373,5 +374,90 @@ describe('help', () => {
     expect(code).toBe(0)
     expect(out).toContain('accounts add')
     expect(out).toContain('accounts use')
+    expect(out).toContain('accounts quota')
+  })
+})
+
+/**
+ * `accounts quota` — the command-line half of the on-demand check.
+ *
+ * The sweep itself is spent from the card, in the plugin host's process; this
+ * reader runs in a *different* process against the same file. These pin the
+ * handover: what the card paid for must still be here for the terminal, for the
+ * right provider, and without any credential in the output.
+ */
+describe('accounts quota', () => {
+  /** Write a sweep the way the card's button does. */
+  async function recordSweep(home: string, filename = WORKBUDDY_QUOTA_CHECK_FILENAME): Promise<void> {
+    const checks = new WorkBuddyQuotaCheckStore({ path: join(home, filename) })
+    checks.record({
+      model: 'deepseek-v4.1-flash',
+      checkedAtMs: 1_800_000_000_000,
+      results: [
+        // The first row is keyed by the real slot id of `uid-1`, so the reader
+        // can recognise which account is being served.
+        { id: slotIdForUid('uid-1'), label: '国内一号', state: 'available', status: 200 },
+        { id: 'acct-2', label: '国内二号', state: 'exhausted', status: 402 },
+        { id: 'acct-3', state: 'unknown', status: 401, reason: 'status 401 (session_dead): 会话已失效' },
+      ],
+    })
+  }
+
+  it('says nothing is on record before the first check', async () => {
+    const { code, out, json } = await capture(['accounts', 'quota', '--json'])
+    expect(code).toBe(0)
+    expect(json['checked']).toBe(false)
+    expect((await capture(['accounts', 'quota'])).out).toContain('no quota check on record')
+  })
+
+  it('reads back the rows a sweep wrote, marking the served account', async () => {
+    const { home, authFile } = await setup()
+    await signInAs(authFile, 'uid-1', { nickname: '一号' })
+    await capture(['accounts', 'add', '--label', '国内一号'])
+    await recordSweep(home)
+
+    const { out, json } = await capture(['accounts', 'quota', '--json'])
+    expect(json['checked']).toBe(true)
+    expect(json['model']).toBe('deepseek-v4.1-flash')
+    const results = json['results'] as { id: string, state: string, active: boolean }[]
+    expect(results).toHaveLength(3)
+    expect(results.find(row => row.id === slotIdForUid('uid-1'))).toMatchObject({ state: 'available', active: true })
+    expect(results.find(row => row.id === 'acct-2')?.state).toBe('exhausted')
+
+    const text = (await capture(['accounts', 'quota'])).out
+    expect(text).toContain('国内一号')
+    expect(text).toContain('QUOTA USED UP')
+    expect(text).toContain('会话已失效')
+    // `unknown` must not read as spent: the user's fix there is to sign in again.
+    expect(text).toContain('Not a spent account')
+    void out
+  })
+
+  it('explains that an undecided row is not a spent account', async () => {
+    const { home } = await setup()
+    await recordSweep(home)
+    const { out } = await capture(['accounts', 'quota'])
+    expect(out).toContain('unknown = the check could not decide')
+  })
+
+  it('keeps each provider on its own record', async () => {
+    const { home } = await setup()
+    await recordSweep(home)
+    // The international variant reads its own file, which nothing has written:
+    // a CN sweep says nothing about an international account's credit.
+    const { json } = await capture(['accounts', 'quota', '--provider', 'workbuddy-ai', '--json'])
+    expect(json['checked']).toBe(false)
+    expect(json['provider']).toBe('workbuddy-ai')
+  })
+
+  it('prints no credential material', async () => {
+    const { home, authFile } = await setup()
+    await signInAs(authFile, 'uid-1')
+    await capture(['accounts', 'add'])
+    await recordSweep(home)
+    const { out, json } = await capture(['accounts', 'quota', '--json'])
+    expect(out).not.toContain('at-uid-1')
+    expect(out).not.toContain('rt-uid-1')
+    expect(JSON.stringify(json)).not.toContain('rt-uid-1')
   })
 })

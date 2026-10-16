@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url'
 import { WorkBuddyCredentialStore, workbuddyOwnAuthPath } from './auth.ts'
 import { WorkBuddyAccountError, WorkBuddyAccountStore } from './accounts-store.ts'
 import { WorkBuddyQuotaStore, quotaAccountOf, workbuddyQuotaPath } from './quota-state.ts'
+import { WorkBuddyQuotaCheckStore, workbuddyQuotaCheckPath } from './quota-check-store.ts'
+import type { WorkBuddyQuotaCheckResult } from './quota-check.ts'
 import { WorkBuddyUpstreamClient } from './upstream.ts'
 import { FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS } from './catalog.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
@@ -17,7 +19,7 @@ import { resolveAppVersion } from './app-version.ts'
 type Action = 'accounts' | 'doctor' | 'logout' | 'status'
 
 /** Account subcommands, each acting on the slot store for one variant. */
-type AccountsCommand = 'add' | 'list' | 'remove' | 'rename' | 'use'
+type AccountsCommand = 'add' | 'list' | 'quota' | 'remove' | 'rename' | 'use'
 
 const JSON_SCHEMA_VERSION = 1
 
@@ -38,6 +40,7 @@ function printHelp(): void {
     '  logout   remove the plugin-owned credential copy (the desktop app keeps its sign-in)',
     '  accounts manage parked accounts and switch between them:',
     '             accounts list                      parked accounts, * marks the active one',
+    '             accounts quota                     the last quota check, per account',
     '             accounts add [--label <name>]      archive the account the app is signed into',
     '             accounts use <id>                  serve that account from now on',
     '             accounts rename <id> [--label <name>]',
@@ -280,6 +283,84 @@ function rowLabel(row: AccountRow): string {
   return name === undefined ? row.id : `${name} (${row.id})`
 }
 
+/** One quota-check row as the terminal states it. */
+function quotaRow(result: WorkBuddyQuotaCheckResult): string {
+  if (result.state === 'available') return `available (http ${String(result.status)})`
+  if (result.state === 'exhausted') return `QUOTA USED UP (http ${String(result.status)})`
+  return `unknown${result.reason === undefined ? '' : `: ${result.reason}`} (http ${String(result.status)})`
+}
+
+/**
+ * `quota` — the last on-demand quota check for this variant's parked accounts.
+ *
+ * Read-only on purpose: the sweep spends one real request per parked account,
+ * so it belongs behind the card's explicit button rather than behind a command
+ * a user may run twice out of curiosity. This reports what that button paid for.
+ */
+async function quotaCheck(
+  jsonOutput: boolean,
+  variant: WorkBuddyVariant,
+  store: WorkBuddyAccountStore,
+): Promise<number> {
+  const checks = new WorkBuddyQuotaCheckStore(workbuddyQuotaCheckPath(variant.quotaCheckFilename))
+  const sweep = checks.last()
+  // The active pointer comes from the live slot store, not the sweep: a check
+  // records what each account could do, and which one is served now is a
+  // separate fact the reader needs beside it.
+  const activeId = await store.activeId()
+  if (jsonOutput) {
+    printJson({
+      schemaVersion: JSON_SCHEMA_VERSION,
+      package: 'dsh-workbuddy-connect',
+      version: WORKBUDDY_CONNECT_VERSION,
+      provider: variant.id,
+      file: checks.filePath(),
+      // Stated explicitly because an empty `results` cannot tell "never
+      // checked" from "checked, and no account was parked at the time".
+      checked: sweep !== undefined,
+      ...sweep === undefined ? {} : {
+        model: sweep.model,
+        checkedAt: new Date(sweep.checkedAtMs).toISOString(),
+        results: sweep.results.map(result => ({
+          id: result.id,
+          ...result.label === undefined ? {} : { label: result.label },
+          active: result.id === activeId,
+          state: result.state,
+          status: result.status,
+          ...result.reason === undefined ? {} : { reason: result.reason },
+        })),
+      },
+    })
+    return 0
+  }
+  if (sweep === undefined) {
+    process.stdout.write([
+      `${variant.displayName}: no quota check on record`,
+      'Start one from the plugin card — it sends one minimal request per parked',
+      `account and writes the answer to ${checks.filePath()}.`,
+      '',
+    ].join('\n'))
+    return 0
+  }
+  process.stdout.write([
+    `${variant.displayName} quota check — ${sweep.model}, ${new Date(sweep.checkedAtMs).toISOString()}:`,
+    ...sweep.results.length === 0
+      ? ['  (no parked account was recorded for this check)']
+      : sweep.results.map(result => `  ${result.id === activeId ? '*' : ' '} ${result.label ?? result.id} — ${quotaRow(result)}`),
+    '',
+    '(* = currently served)',
+    ...(sweep.results.some(result => result.state === 'exhausted')
+      ? ['QUOTA USED UP = the upstream refused a minimal request for insufficient credit; switch accounts.']
+      : []),
+    ...(sweep.results.some(result => result.state === 'unknown')
+      ? ['unknown = the check could not decide (transport failure, sign-in, rate limit). Not a spent account.']
+      : []),
+    'A check is one moment: an account reported available can still run dry before the next message.',
+    '',
+  ].join('\n'))
+  return 0
+}
+
 /**
  * `accounts` — manage parked accounts for one variant.
  *
@@ -337,6 +418,8 @@ async function accounts(
     ].join('\n'))
     return 0
   }
+
+  if (command === 'quota') return await quotaCheck(jsonOutput, variant, store)
 
   if (command === 'add') {
     // Read the app's own sign-in, not `current()`: once one account is parked
@@ -441,7 +524,7 @@ async function accounts(
 
   process.stderr.write(
     `dsh-workbuddy-connect: unknown accounts command ${JSON.stringify(command)};`
-    + ' expected add, list, remove, rename, or use\n',
+    + ' expected add, list, quota, remove, rename, or use\n',
   )
   return 1
 }

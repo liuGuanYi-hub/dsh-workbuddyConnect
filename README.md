@@ -110,6 +110,10 @@ dsh plugin --profile web exec dsh-workbuddy-connect doctor --provider workbuddy-
 
 `logout` 只删除该版插件自留的凭据副本，不动桌面 App 自己的登录，也不承诺一定让模型分组消失（App 的凭据文件仍在时依然生效）。
 
+`accounts` 管理停放的账号：`accounts list`（`*` 标记当前对外服务的账号）、`accounts add [--label <名称>]`（存入桌面 App 此刻登录的账号）、`accounts use <id>`、`accounts rename <id> [--label <名称>]`、`accounts remove <id>`，以及 `accounts quota`。
+
+`accounts quota` **只读**上一次「额度检测」的结果：检测本身在插件卡片的「多账号」区按按钮发起，它对每个已停放账号各发一次极小请求（`max_tokens: 1`，收到第一个流事件就断开），会消耗少量积分，因此不自动跑、也不从命令行发起。结果落在 `$DSH_HOME` 的 `.workbuddy-quota-check.json`（国际版另有 `.workbuddy-ai-quota-check.json`），所以换进程、重启后仍读得到；`--json` 输出机器可读格式。每个账号报 `available`（上游接受了请求）/ `exhausted`（因积分不足被拒）/ `unknown`（没能判定：登录失效、限流、传输失败），**`unknown` 不等于额度用尽**——它的常见修法是重新登录，而不是切到另一个账号。
+
 ## 已知限制
 
 - 在 macOS 的 DSH Web / Desktop / TUI 下验证通过（0.3.2 起要求 `0.1.5-rc.1`+、Node 22+；TUI 需终端界面插件 `0.10.0-beta.5` 及以上，见安装章节说明）。Windows 会依次探测 Local 与 Roaming AppData；WSL 会优先从挂载的 Windows 用户目录读取登录凭据。若 Windows 与 Linux 用户名不同且 Windows 环境变量未传入 WSL，请通过 `WORKBUDDY_AUTH_FILE`（国际版为 `WORKBUDDY_AI_AUTH_FILE`）指定实际位置。
