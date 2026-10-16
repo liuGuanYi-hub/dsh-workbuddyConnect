@@ -821,7 +821,17 @@ export function workBuddyWindowsDiscoveryTools(): WorkBuddyWindowsDiscoveryTools
   const powershellPath = systemRoot === undefined || systemRoot === ''
     ? undefined
     : join(systemRoot, WINDOWS_REGISTRY_RELATIVE_POWERSHELL)
-  const runTool = (root: string, signal: AbortSignal): Promise<Buffer> => new Promise<Buffer>((resolve, reject) => {
+  /**
+   * One `reg.exe query <root> /s`, answered in raw bytes.
+   *
+   * `undefined` is a third outcome beside "a document" and "a failure": reg.exe
+   * exited 1 with a diagnostic written in the console's code page, which this
+   * process cannot read as text. Whether that means "the root is absent" is
+   * decided by {@link runFallback}, whose absence verdict arrives as an exit
+   * code. The ASCII case stays here, because that diagnostic reads the same in
+   * every code page and costs no second process.
+   */
+  const runTool = (root: string, signal: AbortSignal): Promise<Buffer | undefined> => new Promise<Buffer | undefined>((resolve, reject) => {
     if (regPath === undefined) {
       reject(new DiscoveryIncompleteError('SystemRoot is not configured'))
       return
@@ -845,14 +855,25 @@ export function workBuddyWindowsDiscoveryTools(): WorkBuddyWindowsDiscoveryTools
       // confirmed missing-key diagnostic is an empty result; every other
       // failure stays incomplete rather than becoming "not installed".
       //
-      // Both supported diagnostics are ASCII in every code page, so reading
-      // stderr as UTF-8 cannot change whether this regex matches; a diagnostic
-      // that is not one of them stays incomplete, as before.
+      // What counts as confirmed depends on the bytes: a diagnostic written in
+      // ASCII says the same thing in every code page, so it may be matched as
+      // text. Anything else is reg.exe speaking the console's code page — GBK on
+      // zh-CN Windows, Big5 on zh-TW, Shift-JIS on ja-JP — and decoding those
+      // bytes as UTF-8 yields mojibake that matches nothing, which used to turn
+      // a plainly absent key into "discovery incomplete" on every Chinese
+      // Windows. An unreadable diagnostic is therefore not a verdict: it is
+      // referred to the PowerShell probe, which reports absence as exit code 2
+      // and needs no words to be read correctly.
       if (error !== null && error !== undefined) {
-        if (error.killed !== true && (error.code === 1 || error.code === '1')
-          && windowsRegistryKeyMissing(stderr.toString('utf8'))) {
-          resolve(Buffer.alloc(0))
-          return
+        if (error.killed !== true && (error.code === 1 || error.code === '1')) {
+          if (!isAsciiOnly(stderr)) {
+            resolve(undefined)
+            return
+          }
+          if (windowsRegistryKeyMissing(stderr.toString('utf8'))) {
+            resolve(Buffer.alloc(0))
+            return
+          }
         }
         reject(new DiscoveryIncompleteError(`reg.exe could not complete (${subprocessFailureReason(error)})`))
         return
@@ -946,6 +967,11 @@ export function workBuddyWindowsDiscoveryTools(): WorkBuddyWindowsDiscoveryTools
   return {
     queryUninstallRoot: async (root, signal) => {
       const raw = await runTool(root, signal)
+      // No answer at all: reg.exe failed in a way only a localized sentence
+      // could explain, so the numeric probe decides — absence (exit 2) becomes an
+      // empty document, an unreadable root (exit 3) and anything else stay
+      // incomplete.
+      if (raw === undefined) return await runFallback(root, signal)
       // Fall back only when the primary output cannot be read unambiguously
       // (#88). The trigger is a property of the *bytes*, never of a decoding:
       // ASCII-only output means every code page agrees, so nothing is
@@ -1430,11 +1456,23 @@ function subprocessFailureReason(error: { readonly code?: unknown, readonly kill
   return error.killed === true ? 'timed out' : String(error.code ?? 'unavailable')
 }
 
-/** Only known missing-key diagnostics can safely make a failed query empty. */
+/**
+ * The one diagnostic this tool may read as text: reg.exe's own English
+ * "key or value not found".
+ *
+ * Only reachable for ASCII bytes, and deliberately so. Every other locale
+ * writes the same meaning in the console's code page (GBK on zh-CN, Big5 on
+ * zh-TW, Shift-JIS on ja-JP…), and a non-ASCII byte makes the code page
+ * unknowable from the bytes — the exact rule #88 already applies to stdout.
+ * Those cases are not guessed at: they are referred to
+ * {@link workBuddyWindowsDiscoveryTools}'s PowerShell probe, which reports
+ * absence as exit code 2 and needs no wording to be read correctly. Matching a
+ * decoded localised sentence here would instead make the answer depend on
+ * which languages this file happens to have memorised.
+ */
 function windowsRegistryKeyMissing(stderr: string): boolean {
   const detail = stderr.trim()
   return /^ERROR:\s*The system was unable to find the specified registry key or value\.?$/iu.test(detail)
-    || /^错误[:：]\s*系统找不到指定的注册表项或值[。.]?$/u.test(detail)
 }
 
 /**

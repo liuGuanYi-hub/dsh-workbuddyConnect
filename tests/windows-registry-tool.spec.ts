@@ -72,18 +72,76 @@ function registryStdout(
 /** GBK bytes for 人工智能, which is what a zh-CN console emits for that path. */
 const GBK_CJK = Buffer.from([0xc8, 0xcb, 0xb9, 0xa4, 0xd6, 0xc7, 0xc4, 0xdc])
 
+/**
+ * reg.exe's "the specified registry key or value does not exist" diagnostic as
+ * a real zh-CN Windows console writes it: GBK bytes, captured from
+ * `%SystemRoot%\System32\reg.exe query HKCU\...\Uninstall\<absent> /s` on
+ * 2026-10-16 (`错误: 系统找不到指定的注册表项或值。`).
+ *
+ * Pinned as bytes on purpose. The bug this covers is an encoding bug, so the
+ * fixture has to be what the console actually emits — the same sentence typed
+ * into a JS string would arrive as UTF-8 and prove nothing about code pages.
+ */
+const GBK_KEY_MISSING = Buffer.from([
+  0xb4, 0xed, 0xce, 0xf3, 0x3a, 0x20, 0xcf, 0xb5, 0xcd, 0xb3, 0xd5, 0xd2, 0xb2, 0xbb, 0xb5, 0xbd,
+  0xd6, 0xb8, 0xb6, 0xa8, 0xb5, 0xc4, 0xd7, 0xa2, 0xb2, 0xe1, 0xb1, 0xed, 0xcf, 0xee, 0xbb, 0xf2,
+  0xd6, 0xb5, 0xa1, 0xa3, 0x0d, 0x0a,
+])
+
+/**
+ * `reg.exe` exits 1 writing this stderr, then the PowerShell probe answers as
+ * scripted, so the two channels can disagree on purpose.
+ */
+function registryFailureThenFallback(
+  stderr: Buffer,
+  fallback: { code?: number, absentText?: string },
+): string[] {
+  const spawned: string[] = []
+  execFileMock.mockImplementation((
+    binary: string,
+    _args: string[],
+    _options: object,
+    callback: (error: RegistryFailure | null, stdout: Buffer, stderrBytes: Buffer) => void,
+  ) => {
+    const child = new EventEmitter()
+    spawned.push(binary)
+    queueMicrotask(() => {
+      if (!/powershell/iu.test(binary)) {
+        callback(Object.assign(new Error('reg query failed'), { code: 1 }), Buffer.alloc(0), stderr)
+      } else if (fallback.code !== undefined) {
+        callback(Object.assign(new Error('powershell failed'), {
+          code: fallback.code,
+          killed: false,
+        }), Buffer.alloc(0), Buffer.from(fallback.absentText ?? '', 'utf8'))
+      } else {
+        callback(null, Buffer.from('[]', 'utf8'), Buffer.alloc(0))
+      }
+      child.emit('close')
+    })
+    return child
+  })
+  return spawned
+}
+
+/**
+ * Which channels a scripted run touched, in order, by kind.
+ *
+ * The tool resolves both binaries by absolute path from SystemRoot, so the
+ * assertions are about *how many processes and which*, never about a path.
+ */
+function spawnedChannels(binaries: readonly string[]): string[] {
+  return binaries.map(binary => /powershell/iu.test(binary) ? 'powershell.exe' : 'reg.exe')
+}
+
 afterEach(() => {
   vi.unstubAllEnvs()
   execFileMock.mockReset()
 })
 
 describe('Windows registry query failure classification', () => {
-  it.each([
-    'ERROR: The system was unable to find the specified registry key or value.',
-    '错误: 系统找不到指定的注册表项或值。',
-  ])('treats a confirmed missing key as an empty result: %s', async stderr => {
+  it('treats the ASCII missing-key diagnostic as an empty result without a second process', async () => {
     vi.stubEnv('SystemRoot', 'C:\\Windows')
-    registryFailure(stderr)
+    registryFailure('ERROR: The system was unable to find the specified registry key or value.')
     await expect(workBuddyWindowsDiscoveryTools().queryUninstallRoot('HKCU\\Missing', new AbortController().signal))
       .resolves.toBe('')
     expect(execFileMock).toHaveBeenCalledTimes(1)
@@ -123,6 +181,82 @@ describe('Windows registry query failure classification', () => {
     })
     await expect(workBuddyWindowsDiscoveryTools().queryUninstallRoot('HKLM\\Uninstall', new AbortController().signal))
       .rejects.toThrow(/reg\.exe could not complete \(the output exceeded the size limit\)/)
+  })
+})
+
+/**
+ * A localised reg.exe diagnostic must not decide anything by itself.
+ *
+ * The bug these pin: reg.exe writes its diagnostics in the console's code page,
+ * so on a Chinese Windows the bytes were decoded as UTF-8 into mojibake, matched
+ * nothing, and a plainly absent registry root became "discovery incomplete" —
+ * the plugin could then not tell a machine where WorkBuddy is absent from one it
+ * simply failed to check. The fix is not to memorise more languages: any
+ * non-ASCII diagnostic is unreadable-by-rule, so absence is decided by the
+ * PowerShell probe's exit code, which needs no words and works in every locale.
+ */
+describe('localized reg.exe diagnostics are classified by exit code, not by wording', () => {
+  it('reads a GBK missing-key diagnostic through the numeric probe', async () => {
+    vi.stubEnv('SystemRoot', 'C:\\Windows')
+    const spawned = registryFailureThenFallback(GBK_KEY_MISSING, { code: 2 })
+    await expect(workBuddyWindowsDiscoveryTools().queryUninstallRoot('HKCU\\Missing', new AbortController().signal))
+      .resolves.toBe('')
+    expect(spawnedChannels(spawned)).toEqual(['reg.exe', 'powershell.exe'])
+  })
+
+  it('does not turn an unreadable root into "absent" just because reg.exe looked localised', async () => {
+    // Exit 3 is PowerShell's "the root exists but a part of it could not be
+    // read". Reporting that as empty would tell the user WorkBuddy is not
+    // installed when the machine only refused to be read.
+    vi.stubEnv('SystemRoot', 'C:\\Windows')
+    registryFailureThenFallback(GBK_KEY_MISSING, { code: 3 })
+    await expect(workBuddyWindowsDiscoveryTools().queryUninstallRoot('HKCU\\Missing', new AbortController().signal))
+      .rejects.toThrow(/could not read the registry root/)
+  })
+
+  it('keeps the failure incomplete when the probe itself cannot answer', async () => {
+    vi.stubEnv('SystemRoot', 'C:\\Windows')
+    registryFailureThenFallback(GBK_KEY_MISSING, { code: 1 })
+    await expect(workBuddyWindowsDiscoveryTools().queryUninstallRoot('HKCU\\Missing', new AbortController().signal))
+      .rejects.toThrow(/powershell\.exe could not complete/)
+  })
+
+  it('refuses to carry an unvalidated root to -Command, even for a localised failure', async () => {
+    // The fallback hands the root to a command line re-parsed as code, so only
+    // a plain path may ride along — and it must be refused before any process
+    // starts rather than after reg.exe already failed.
+    vi.stubEnv('SystemRoot', 'C:\\Windows')
+    const spawned = registryFailureThenFallback(GBK_KEY_MISSING, { code: 2 })
+    await expect(workBuddyWindowsDiscoveryTools().queryUninstallRoot('HKCU\\Missing Key; x', new AbortController().signal))
+      .rejects.toThrow(/not a plain HKLM\/HKCU path/)
+    expect(spawnedChannels(spawned)).toEqual(['reg.exe'])
+  })
+
+  it('still matches an ASCII diagnostic without spending a second process', async () => {
+    // The fast path is the one case where a decode cannot be wrong: ASCII reads
+    // the same in every code page.
+    vi.stubEnv('SystemRoot', 'C:\\Windows')
+    const spawned = registryFailureThenFallback(
+      Buffer.from('ERROR: The system was unable to find the specified registry key or value.', 'ascii'),
+      { code: 2 },
+    )
+    await expect(workBuddyWindowsDiscoveryTools().queryUninstallRoot('HKCU\\Missing', new AbortController().signal))
+      .resolves.toBe('')
+    expect(spawnedChannels(spawned)).toEqual(['reg.exe'])
+  })
+
+  it('reads a UTF-8 Chinese diagnostic through the same numeric probe', async () => {
+    // Not because the UTF-8 form is wrong — it decodes fine — but because the
+    // rule is about bytes: one byte at or above 0x80 makes the code page
+    // unknowable, so no decode of it is trusted anywhere in this tool.
+    vi.stubEnv('SystemRoot', 'C:\\Windows')
+    const spawned = registryFailureThenFallback(
+      Buffer.from('错误: 系统找不到指定的注册表项或值。', 'utf8'),
+      { code: 2 },
+    )
+    await expect(workBuddyWindowsDiscoveryTools().queryUninstallRoot('HKCU\\Missing', new AbortController().signal))
+      .resolves.toBe('')
+    expect(spawnedChannels(spawned)).toEqual(['reg.exe', 'powershell.exe'])
   })
 })
 
