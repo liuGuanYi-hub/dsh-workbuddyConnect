@@ -21,6 +21,9 @@ import { Readable } from 'node:stream'
 import type { WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyCatalog } from './catalog.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
+import { quotaAccountOf, type WorkBuddyQuotaStore } from './quota-state.ts'
+import { quotaExhaustedHint } from './quota-hint.ts'
+import type { WorkBuddyAccountStore } from './accounts-store.ts'
 import { extractDisplayErrorMessage, prepareChatBody, WorkBuddyUpstreamClient, type UpstreamErrorKind } from './upstream.ts'
 
 /** Minimal logger surface the plugin context already provides. */
@@ -52,6 +55,18 @@ export interface WorkBuddyShimOptions {
   client: Pick<WorkBuddyUpstreamClient, 'chatStream'>
   catalog: WorkBuddyCatalog
   logger?: ShimLogger
+  /**
+   * Recorded quota refusals. When present, a `hard_credit` failure is recorded
+   * against the account that produced it, and a later success clears the
+   * verdict for the account that succeeded.
+   */
+  quota?: WorkBuddyQuotaStore
+  /**
+   * This variant's parked accounts, consulted only to name a concrete
+   * alternative in the exhaustion hint. Absent on a host with no slot store,
+   * where the hint falls back to describing the capture flow.
+   */
+  accounts?: WorkBuddyAccountStore
 }
 
 const REQUEST_BODY_LIMIT = 64 * 1024 * 1024
@@ -106,7 +121,7 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
  * is the boundary, and the upstream credential comes from the store alone.
  */
 export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShim {
-  const { store, client, catalog } = options
+  const { store, client, catalog, quota, accounts } = options
   const logger = options.logger
 
   // Per-process shared secret. Lives only in memory; the adapter resolves it
@@ -213,6 +228,12 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     const raw = (await readBody(req)).toString('utf8')
     const prepared = prepareChatBody(raw)
 
+    // The account every later request would be billed to, as the same
+    // `uid:enterpriseId` key the visibility and catalog stores use. Read once
+    // here so the success and failure paths below agree on which account they
+    // are talking about even if the user switches mid-request.
+    const account = quotaAccountOf(credential)
+
     const controller = new AbortController()
     req.on('close', () => controller.abort())
     const result = await client.chatStream(credential, prepared, controller.signal)
@@ -229,13 +250,28 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       const statusNote = (result.status === 401 || result.status === 403) && result.kind !== 'session_dead'
         ? ''
         : ` (http ${result.status})`
+      const remedy = result.kind === 'hard_credit'
+        ? await exhaustionRemedy(account)
+        : undefined
       writeOpenAIError(
         res,
         KIND_STATUS[result.kind],
         result.kind,
-        `workbuddy upstream ${result.kind}${statusNote}: ${detail}`,
+        `workbuddy upstream ${result.kind}${statusNote}: ${detail}${remedy ?? ''}`,
       )
       return
+    }
+
+    // A request that succeeded is the earliest honest evidence that a recorded
+    // refusal no longer holds — the upstream's cycle reset is not observable
+    // any other way. Best-effort: a failure to clear costs a stale card badge,
+    // never the response the user is waiting for.
+    if (quota !== undefined) {
+      try {
+        quota.clear(account)
+      } catch (error: unknown) {
+        logger?.warn('dsh-workbuddy-connect: could not clear quota verdict', error)
+      }
     }
 
     res.writeHead(200, {
@@ -254,6 +290,40 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       if (!sawDone && res.writable) res.end('data: [DONE]\n\n')
     })
     body.pipe(res)
+  }
+
+  /**
+   * Record an exhaustion refusal and build the "switch accounts" sentence.
+   *
+   * Order matters: the verdict is written *before* the alternatives are chosen,
+   * so the account that just ran dry is excluded from its own recommendation
+   * list by the same filter that excludes any earlier casualty.
+   *
+   * Never throws. This runs while an error response is already being composed,
+   * and a failure to consult the slot store must not replace a useful refusal
+   * with an opaque 500 — the caller gets the bare refusal instead.
+   */
+  async function exhaustionRemedy(account: string | undefined): Promise<string | undefined> {
+    if (quota === undefined) return undefined
+    try {
+      if (account !== undefined && !quota.recordExhausted(account)) {
+        logger?.warn('dsh-workbuddy-connect: could not persist quota verdict')
+      }
+      const slots = accounts === undefined ? [] : await accounts.list()
+      const exhaustedName = slots
+        .filter(slot => quotaAccountOf(slot.credential) === account)
+        .map(slot => slot.label?.trim() || slot.credential.nickname?.trim() || slot.id)
+        .find(name => name !== '')
+      return ` ${quotaExhaustedHint({
+        accounts: slots,
+        quota,
+        exhaustedAccount: account,
+        ...exhaustedName === undefined ? {} : { exhaustedName },
+      })}`
+    } catch (error: unknown) {
+      logger?.warn('dsh-workbuddy-connect: could not build the quota remedy hint', error)
+      return undefined
+    }
   }
 
   return {

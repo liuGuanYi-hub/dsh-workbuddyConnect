@@ -23,6 +23,7 @@ import { atRestKeyProviderFor, WorkBuddyAtRestKeyProvider } from './desktop-cred
 import { FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS, WorkBuddyCatalog } from './catalog.ts'
 import { workbuddyCatalogPath, WorkBuddyCatalogStore } from './catalog-store.ts'
 import { WorkBuddyVisibilityStore, workbuddyVisibilityPath } from './visibility-store.ts'
+import { WorkBuddyQuotaStore, workbuddyQuotaPath } from './quota-state.ts'
 import { createWorkBuddyAdapter } from './adapter.ts'
 import { createWorkBuddyShim } from './shim.ts'
 import { WorkBuddyProbeService } from './probe-service.ts'
@@ -302,6 +303,15 @@ interface VariantRuntime {
    */
   visibilityStore: WorkBuddyVisibilityStore
   /**
+   * This variant's recorded quota refusals, keyed by account.
+   *
+   * Written from the shim, where the upstream's `hard_credit` answer is
+   * observed, and read by the status route so the card can mark an account that
+   * has run dry. One file per variant: the two products bill separately, so a
+   * CN account's exhaustion says nothing about an international one.
+   */
+  quotaStore: WorkBuddyQuotaStore
+  /**
    * This variant's parked accounts, or undefined on a host without a slot
    * store (the credential store has none). Read per call, so a capture or
    * switch changes what the card lists without rebuilding the runtime.
@@ -430,6 +440,9 @@ function createVariantRuntime(
   const visibilityStore = new WorkBuddyVisibilityStore(
     workbuddyVisibilityPath(variant.visibilityFilename),
   )
+  const quotaStore = new WorkBuddyQuotaStore(
+    workbuddyQuotaPath(variant.quotaFilename),
+  )
   const probeService = new WorkBuddyProbeService({
     store: probeStore,
     catalog,
@@ -456,6 +469,7 @@ function createVariantRuntime(
     probeService,
     savedCatalogs,
     visibilityStore,
+    quotaStore,
     account: () => accountOf(variant.id),
     fallback,
     catalogSource: 'fallback',
@@ -543,7 +557,18 @@ function probeSection(runtime: VariantRuntime, consent: boolean): WorkBuddyWebPr
  */
 async function startVariant(ctx: Context, runtime: VariantRuntime): Promise<boolean> {
   const { variant, store, client, catalog, probeService } = runtime
-  const shim = createWorkBuddyShim({ store, client, catalog, logger: ctx.logger })
+  const shim = createWorkBuddyShim({
+    store,
+    client,
+    catalog,
+    logger: ctx.logger,
+    // Quota refusals are observed here, at the one place an upstream chat
+    // answer is actually seen, and recorded against the account that earned
+    // them. The parked accounts ride along so an exhaustion refusal can name a
+    // concrete alternative rather than only describing the workflow.
+    quota: runtime.quotaStore,
+    ...runtime.accountStore === undefined ? {} : { accounts: runtime.accountStore },
+  })
   try {
     await shim.ready
   } catch (error: unknown) {

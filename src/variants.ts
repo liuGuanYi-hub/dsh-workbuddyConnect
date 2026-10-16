@@ -62,6 +62,15 @@ export interface WorkBuddyVariant {
    * answer for the other's picker.
    */
   visibilityFilename: string
+  /**
+   * Basename of the plugin-owned per-account quota-verdict file under
+   * `$DSH_HOME`.
+   *
+   * One per variant, like the others: the two products bill against separate
+   * upstream accounts, so an exhaustion recorded on the CN endpoint must never
+   * mark a parked international account as spent.
+   */
+  quotaFilename: string
   /** Same-origin status route consumed by this variant's card. */
   statusPath: string
   /** Same-origin probe-control route consumed by this variant's card. */
@@ -128,6 +137,7 @@ export const WORKBUDDY_VARIANTS: readonly WorkBuddyVariant[] = [
     probeFilename: '.workbuddy-probe.json',
     catalogFilename: '.workbuddy-catalog.json',
     visibilityFilename: '.workbuddy-model-visibility.json',
+    quotaFilename: '.workbuddy-quota-state.json',
     statusPath: WORKBUDDY_STATUS_PATH,
     probePath: WORKBUDDY_PROBE_PATH,
   },
@@ -158,6 +168,7 @@ export const WORKBUDDY_VARIANTS: readonly WorkBuddyVariant[] = [
     probeFilename: '.workbuddy-ai-probe.json',
     catalogFilename: '.workbuddy-ai-catalog.json',
     visibilityFilename: '.workbuddy-ai-model-visibility.json',
+    quotaFilename: '.workbuddy-ai-quota-state.json',
     statusPath: WORKBUDDY_AI_STATUS_PATH,
     probePath: WORKBUDDY_AI_PROBE_PATH,
   },

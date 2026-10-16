@@ -2,11 +2,14 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { request } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WorkBuddyCredentialStore } from '../src/auth.ts'
+import { WorkBuddyAccountStore } from '../src/accounts-store.ts'
 import { WorkBuddyCatalog } from '../src/catalog.ts'
+import { WorkBuddyQuotaStore, quotaAccountOf } from '../src/quota-state.ts'
 import { createWorkBuddyShim, type WorkBuddyShim } from '../src/shim.ts'
 import type { WorkBuddyChatResult } from '../src/upstream.ts'
+import { CN_VARIANT } from '../src/variants.ts'
 
 const CLEANUP: (() => Promise<void>)[] = []
 
@@ -19,6 +22,7 @@ interface Harness {
   store: WorkBuddyCredentialStore
   upstreamBodies: string[]
   upstreamResponse: () => WorkBuddyChatResult
+  quota: WorkBuddyQuotaStore
 }
 
 /** Raw HTTP request with full header control (fetch forbids overriding Host). */
@@ -50,7 +54,10 @@ function rawRequest(options: {
   })
 }
 
-async function startShim(upstreamResponse: () => WorkBuddyChatResult): Promise<Harness> {
+async function startShim(
+  upstreamResponse: () => WorkBuddyChatResult,
+  options: { withQuota?: boolean, accounts?: WorkBuddyAccountStore } = {},
+): Promise<Harness> {
   const dir = await mkdtemp(join(tmpdir(), 'wb-shim-'))
   CLEANUP.push(() => rm(dir, { recursive: true, force: true }))
   const desktop = join(dir, 'workbuddy-desktop.info')
@@ -63,11 +70,15 @@ async function startShim(upstreamResponse: () => WorkBuddyChatResult): Promise<H
     ownPath: join(dir, 'own.json'),
     refresh: async () => ({ accessToken: 'unused' }),
   })
+  // Only the quota tests opt in: the rest assert the shipped wiring's behaviour
+  // and must not acquire a store the production host passes only when present.
+  const quota = new WorkBuddyQuotaStore({ path: join(dir, 'quota.json') })
   const harness: Harness = {
     shim: undefined as unknown as WorkBuddyShim,
     store,
     upstreamBodies: [],
     upstreamResponse,
+    quota,
   }
   harness.shim = createWorkBuddyShim({
     store,
@@ -78,10 +89,39 @@ async function startShim(upstreamResponse: () => WorkBuddyChatResult): Promise<H
         return harness.upstreamResponse()
       },
     },
+    ...options.withQuota !== true ? {} : { quota },
+    ...options.accounts === undefined ? {} : { accounts: options.accounts },
   })
   await harness.shim.ready
   CLEANUP.push(() => harness.shim.close())
   return harness
+}
+
+/** POST one chat completion and return the raw error body, if any. */
+async function postChat(harness: Harness): Promise<{ status: number, body: string }> {
+  const response = await fetch(`${harness.shim.baseUrl()}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', authorization: `Bearer ${harness.shim.token()}` },
+    body: JSON.stringify({ model: 'deepseek-v4-flash', messages: [{ role: 'user', content: 'hi' }] }),
+  })
+  return { status: response.status, body: await response.text() }
+}
+
+/**
+ * A slot store pointed at a throwaway harness home.
+ *
+ * `DSH_HOME` is stubbed rather than left ambient: these tests run inside a live
+ * DSH session where the variable names the user's own `.dsh`, so an unstubbed
+ * store would archive fake accounts straight into the real harness home.
+ */
+async function tempAccountStore(): Promise<WorkBuddyAccountStore> {
+  const home = await mkdtemp(join(tmpdir(), 'wb-shim-home-'))
+  vi.stubEnv('DSH_HOME', home)
+  CLEANUP.push(async () => {
+    vi.unstubAllEnvs()
+    await rm(home, { recursive: true, force: true })
+  })
+  return new WorkBuddyAccountStore({ variant: CN_VARIANT })
 }
 
 describe('WorkBuddy shim', () => {
@@ -412,5 +452,134 @@ describe('error text policy against the host AUTH heuristic (PR #58)', () => {
     const body = JSON.parse(text) as { error: { message: string } }
     expect(body.error.message).toBe('workbuddy upstream client: plain text refusal without json')
     expect(HOST_AUTH_HEURISTIC.test(body.error.message)).toBe(false)
+  })
+})
+
+describe('WorkBuddy shim exhaustion guidance', () => {
+  /** A refusal the upstream answers when an account is out of credit. */
+  const CREDIT_REFUSAL = (): WorkBuddyChatResult => ({
+    ok: false,
+    status: 402,
+    kind: 'hard_credit',
+    message: JSON.stringify({ code: 1024, msg: 'insufficient credit' }),
+  })
+
+  it('appends a switch-account hint to a hard_credit refusal', async () => {
+    const harness = await startShim(CREDIT_REFUSAL, { withQuota: true })
+    const { status, body } = await postChat(harness)
+    expect(status).toBe(402)
+    const message = (JSON.parse(body) as { error: { message: string } }).error.message
+    // The original refusal is preserved, and the remedy is added to it.
+    expect(message).toContain('hard_credit')
+    expect(message).toContain('额度已用尽')
+    expect(message).toContain('捕获')
+  })
+
+  it('records the verdict against the account that was refused', async () => {
+    const harness = await startShim(CREDIT_REFUSAL, { withQuota: true })
+    await postChat(harness)
+    // The credential in this harness is uid `uid-1` with no enterprise id.
+    expect(harness.quota.isExhausted('uid-1:')).toBe(true)
+  })
+
+  it('names a parked alternative when one exists', async () => {
+    const accounts = await tempAccountStore()
+    await accounts.save({
+      accessToken: 'at-2',
+      refreshToken: 'rt-2',
+      expiresAtMs: Date.now() + 3_600_000,
+      domain: 'www.codebuddy.cn',
+      uid: 'uid-2',
+      nickname: '备用号',
+      source: 'dsh',
+    }, { label: '子丹' })
+
+    const harness = await startShim(CREDIT_REFUSAL, { withQuota: true, accounts })
+    const { body } = await postChat(harness)
+    const message = (JSON.parse(body) as { error: { message: string } }).error.message
+    expect(message).toContain('子丹')
+  })
+
+  it('does not recommend an account that already ran dry', async () => {
+    const accounts = await tempAccountStore()
+    await accounts.save({
+      accessToken: 'at-2',
+      refreshToken: 'rt-2',
+      expiresAtMs: Date.now() + 3_600_000,
+      domain: 'www.codebuddy.cn',
+      uid: 'uid-2',
+      source: 'dsh',
+    }, { label: '子丹' })
+
+    const harness = await startShim(CREDIT_REFUSAL, { withQuota: true, accounts })
+    harness.quota.recordExhausted('uid-2:')
+    const { body } = await postChat(harness)
+    const message = (JSON.parse(body) as { error: { message: string } }).error.message
+    expect(message).not.toContain('子丹')
+    expect(message).toContain('也都标记为额度用尽')
+  })
+
+  it('clears a verdict after a request succeeds again', async () => {
+    const harness = await startShim(() => ({
+      ok: true,
+      response: new Response('data: [DONE]\n\n', {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      }),
+    }), { withQuota: true })
+    harness.quota.recordExhausted('uid-1:')
+    expect(harness.quota.isExhausted('uid-1:')).toBe(true)
+    await postChat(harness)
+    // A successful call is the earliest honest evidence the refusal no longer
+    // holds, since the upstream's cycle reset is not observable directly.
+    expect(harness.quota.isExhausted('uid-1:')).toBe(false)
+  })
+
+  it('leaves other failure classes without a switch hint', async () => {
+    const harness = await startShim(() => ({
+      ok: false,
+      status: 429,
+      kind: 'soft_rate',
+      message: 'too many requests',
+    }), { withQuota: true })
+    const { status, body } = await postChat(harness)
+    expect(status).toBe(429)
+    const message = (JSON.parse(body) as { error: { message: string } }).error.message
+    expect(message).toContain('soft_rate')
+    // Rate limiting is not a quota wall; telling the user to switch accounts
+    // would send them to burn a second account's quota on the same burst.
+    expect(message).not.toContain('额度已用尽')
+    expect(harness.quota.isExhausted('uid-1:')).toBe(false)
+  })
+
+  it('keeps the plain refusal when no quota store is wired', async () => {
+    const harness = await startShim(CREDIT_REFUSAL)
+    const { status, body } = await postChat(harness)
+    expect(status).toBe(402)
+    const message = (JSON.parse(body) as { error: { message: string } }).error.message
+    expect(message).toContain('hard_credit')
+    expect(message).not.toContain('额度已用尽')
+  })
+
+  it('still answers the refusal when the account store cannot be read', async () => {
+    // A store whose directory cannot be listed must not turn a useful 402 into
+    // an opaque 500; the remedy is optional, the refusal is not.
+    const broken = {
+      list: async () => { throw new Error('unreadable') },
+    } as unknown as WorkBuddyAccountStore
+    const harness = await startShim(CREDIT_REFUSAL, { withQuota: true, accounts: broken })
+    const { status, body } = await postChat(harness)
+    expect(status).toBe(402)
+    expect((JSON.parse(body) as { error: { message: string } }).error.message).toContain('hard_credit')
+    // The verdict was still recorded before the lookup failed.
+    expect(harness.quota.isExhausted('uid-1:')).toBe(true)
+  })
+
+  it('records the verdict even when no accounts are parked', async () => {
+    const harness = await startShim(CREDIT_REFUSAL, { withQuota: true })
+    const { body } = await postChat(harness)
+    const message = (JSON.parse(body) as { error: { message: string } }).error.message
+    expect(message).toContain('还没有停放其他账号')
+    expect(harness.quota.isExhausted(quotaAccountOf({ uid: 'uid-1' }))).toBe(true)
   })
 })
