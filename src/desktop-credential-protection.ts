@@ -32,6 +32,7 @@ import { basename, dirname, join } from 'node:path'
 import type { WorkBuddySignedOutReasonCode } from './status-paths.ts'
 import { electronProfileFor } from './variants.ts'
 import type { WorkBuddyElectronProduct, WorkBuddyVariant } from './variants.ts'
+import { isWsl } from './wsl.ts'
 
 /** The four states a desktop auth document can be read as. */
 export type DesktopAuthFormat = 'absent' | 'plaintext' | 'encrypted' | 'unrecognized'
@@ -611,11 +612,112 @@ export interface WorkBuddyAtRestKeyProviderOptions {
   /** Platform override for deterministic discovery tests. */
   platform?: NodeJS.Platform
   /**
+   * Whether the helper spawn crosses WSL→Windows interop. Injectable so tests
+   * can simulate a WSL host on any platform; defaults to the shared
+   * {@link isWsl} check. Only consulted for the key-helper spawn (#133) —
+   * never for discovery.
+   */
+  wsl?: () => boolean
+  /**
    * Total budget for one discovery run, covering the search and every
    * candidate check. Injectable so tests can exercise exhaustion without
    * waiting out the production 10s.
    */
   discoveryBudgetMs?: number
+}
+
+/**
+ * Merge a `WSLENV` value so `ELECTRON_RUN_AS_NODE` crosses WSL→Windows
+ * interop (#133).
+ *
+ * WSL only forwards listed variables to a Windows child, and only when the
+ * entry carries the `/w` (WSL→Windows) direction flag — a plain
+ * `env: { …, ELECTRON_RUN_AS_NODE: '1' }` stays on the Linux side, so the
+ * WorkBuddy exe starts in GUI mode and its stdout is app log rather than the
+ * key payload.
+ *
+ * The target variable is consolidated into exactly ONE safe entry, because
+ * duplicate same-name entries leave the forwarding direction indeterminate:
+ *
+ * - the single entry always carries `w` (the plugin's requirement) and takes
+ *   the position of the first same-name occurrence;
+ * - `u` (Windows→WSL) is kept when ANY existing same-name entry asked for it,
+ *   so a user's bidirectional setup survives as `/uw`;
+ * - the path flags are dropped: `p` (path translation) and `l` (path list)
+ *   would mangle the value, which here is the numeric switch `1` —
+ *   `ELECTRON_RUN_AS_NODE=1` must arrive byte-for-byte, never as a converted
+ *   path. An inherited `/pw`, `/lw`, or `/l` therefore normalizes to a
+ *   path-free flag set rather than being appended to;
+ * - a BARE name carries no direction at all, so it counts as neither `w` nor
+ *   `u` — it only consolidates;
+ * - with no same-name entry at all, `ELECTRON_RUN_AS_NODE/w` is appended;
+ * - every OTHER entry keeps its order and bytes; empty segments (the
+ *   trailing colons Windows Terminal tends to leave) and exact duplicates
+ *   among them are dropped.
+ *
+ * The result is idempotent: merging it again yields the same string.
+ *
+ * @param value - the inherited `WSLENV` value, or `undefined` when unset.
+ * @returns the `WSLENV` value the child should receive.
+ */
+export function wslenvForwardRunAsNode(value: string | undefined): string {
+  const merged: string[] = []
+  /** Index of the consolidated target entry inside `merged`, once placed. */
+  let targetIndex = -1
+  /** The safe flag set for the target: always `w`, plus `u` if asked for. */
+  let targetFlags = '/w'
+  for (const entry of (value ?? '').split(':')) {
+    if (entry === '') continue
+    const slash = entry.indexOf('/')
+    const name = slash === -1 ? entry : entry.slice(0, slash)
+    if (name !== 'ELECTRON_RUN_AS_NODE') {
+      // Other variables are none of the plugin's business: keep them as-is,
+      // collapsing only exact duplicates.
+      if (!merged.includes(entry)) merged.push(entry)
+      continue
+    }
+    const flags = slash === -1 ? '' : entry.slice(slash + 1)
+    // A later duplicate may be the one carrying the `u` direction; remember
+    // it and re-write the single consolidated entry in place.
+    if (flags.includes('u')) targetFlags = '/uw'
+    if (targetIndex === -1) {
+      targetIndex = merged.length
+      merged.push(`ELECTRON_RUN_AS_NODE${targetFlags}`)
+    } else {
+      merged[targetIndex] = `ELECTRON_RUN_AS_NODE${targetFlags}`
+    }
+  }
+  if (targetIndex === -1) merged.push(`ELECTRON_RUN_AS_NODE${targetFlags}`)
+  return merged.join(':')
+}
+
+/**
+ * The environment the at-rest key helper is spawned with (#133).
+ *
+ * Always a fresh object — the parent (`process.env` in production) is never
+ * mutated. `ELECTRON_RUN_AS_NODE=1` forces the Electron binary into plain
+ * Node mode; when the spawn crosses WSL→Windows interop — a WSL host and a
+ * helper that is itself a Windows executable — the child's `WSLENV` is
+ * additionally merged via {@link wslenvForwardRunAsNode} so the interop layer
+ * actually forwards that variable. Every other platform and path combination
+ * gets the previous behaviour byte-for-byte.
+ *
+ * @param parent - the environment to inherit (a copy is taken).
+ * @param electronPath - the helper binary about to be spawned.
+ * @param wsl - whether the current process runs inside WSL.
+ * @returns the child process environment.
+ */
+export function helperChildEnv(parent: NodeJS.ProcessEnv, electronPath: string, wsl: boolean): NodeJS.ProcessEnv {
+  const childEnv: NodeJS.ProcessEnv = { ...parent, ELECTRON_RUN_AS_NODE: '1' }
+  // The interop decision follows the FILE, not the mount point: WSL's
+  // automount root is configurable (`/windir/`, `/`, …), so a Windows exe can
+  // legitimately live outside `/mnt`. A Windows executable is recognized by
+  // its `.exe` suffix (case-insensitive); a native Linux helper — even one
+  // installed under `/mnt` — never consults WSLENV and stays untouched.
+  if (wsl && basename(electronPath).toLowerCase().endsWith('.exe')) {
+    childEnv['WSLENV'] = wslenvForwardRunAsNode(childEnv['WSLENV'])
+  }
+  return childEnv
 }
 
 /**
@@ -939,6 +1041,7 @@ function parseWindowsUninstallJson(output: string): string | undefined {
   private readonly platform: NodeJS.Platform
   private readonly discoveryBudgetMs: number
   private readonly timeoutMs: number
+  private readonly wsl: () => boolean
   private readonly source: WorkBuddyKeyPayloadSource
   private readonly spawnHelper: (electronPath: string) => Promise<string>
   /**
@@ -969,6 +1072,7 @@ function parseWindowsUninstallJson(output: string): string | undefined {
     this.windowsTools = options.windowsTools ?? workBuddyWindowsDiscoveryTools()
     this.discoveryBudgetMs = options.discoveryBudgetMs ?? WORKBUDDY_DISCOVERY_BUDGET_MS
     this.timeoutMs = options.timeoutMs ?? 10_000
+    this.wsl = options.wsl ?? isWsl
     this.spawnHelper = options.spawnHelper ?? (path => this.spawnAt(path))
     this.source = options.source ?? (() => this.spawnPayload())
   }
@@ -1278,7 +1382,11 @@ function parseWindowsUninstallJson(output: string): string | undefined {
         timeout: this.timeoutMs,
         maxBuffer: 1024 * 1024,
         windowsHide: true,
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+        // #133: under WSL→Windows interop the variable must ALSO be listed in
+        // the child's WSLENV with the /w flag, or the Windows exe never sees
+        // it and starts in GUI mode. helperChildEnv keeps every other
+        // platform's environment byte-for-byte as before.
+        env: helperChildEnv(process.env, electronPath, this.wsl()),
       }, (error, stdout) => {
         if (error !== null && error !== undefined) {
           // Code and reason only: stdout/stderr can carry paths or crash dumps,

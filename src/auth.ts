@@ -9,12 +9,13 @@
  */
 
 import { readFile, rm } from 'node:fs/promises'
-import { homedir, release } from 'node:os'
+import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { WorkBuddyAccountStore, sameAccountIdentity } from './accounts-store.ts'
 import { regionOf } from './upstream.ts'
+import { isWsl } from './wsl.ts'
 import {
   WorkBuddyAtRestKeyProvider,
   WorkBuddyElectronPathError,
@@ -112,13 +113,6 @@ export function workbuddyOwnAuthPath(): string {
 }
 
 const DESKTOP_AUTH_RELATIVE_PATH = ['CodeBuddyExtension', 'Data', 'Public', 'auth', 'workbuddy-desktop.info'] as const
-
-/** Whether this Linux process is running inside Windows Subsystem for Linux. */
-function isWsl(): boolean {
-  if (process.platform !== 'linux') return false
-  if (process.env['WSL_DISTRO_NAME'] !== undefined || process.env['WSL_INTEROP'] !== undefined) return true
-  return release().toLowerCase().includes('microsoft')
-}
 
 /** Convert a Windows drive path to WSL's conventional `/mnt/<drive>` form. */
 function windowsPathForWsl(value: string | undefined): string | undefined {

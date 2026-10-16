@@ -308,16 +308,40 @@ function tooltipText(
 export function WorkBuddyProbeControl({ directory, t }: WorkBuddyProbeControlProps) {
   const subscribe = useCallback((listener: () => void) => directory.subscribe(listener), [directory])
   const snapshot = useCallback(() => directory.getSnapshot(), [directory])
-  const selection = useSyncExternalStore(subscribe, snapshot, snapshot).current
-  const card = selection === undefined ? undefined : cardVariantFor(selection.provider)
+  // The host's `ModelDirectoryState.current` is `ModelSelection | null` — null,
+  // never undefined, while the session's projection or the shared catalog is
+  // still loading (#125). The prop's type resolves to `any` here (the host's
+  // `SnapshotStore` module is not installed and `skipLibCheck` skips its
+  // re-export), so the runtime union is asserted once to keep the handling
+  // below checked.
+  const selection = useSyncExternalStore(subscribe, snapshot, snapshot).current as
+    { provider: string, model: string } | null | undefined
+  // A not-ready selection (`null`/`undefined`) renders nothing but KEEPS the
+  // component mounted and subscribed: the directory store replaces its
+  // snapshot once the session's projection lands, `useSyncExternalStore`
+  // re-renders, and the seat appears. The old code guarded only `undefined`
+  // (a value this store never produces) and dereferenced `selection.provider`
+  // off `null`, which the slot runtime's per-entry error boundary turns into
+  // the badge and the ↻ disappearing together until a full reload — the exact
+  // report of #125 / #132.
+  //
+  // Deliberately NO remembered seat across the not-ready window: which
+  // account's balance may show is a property of THIS session's selection, and
+  // while it is unknown (another session's composer may be switching to a
+  // non-WorkBuddy provider right now) showing the last WorkBuddy variant
+  // anywhere would present — and bill-query — the wrong provider's account.
+  // The blank window is brief by construction; a resolved WorkBuddy selection
+  // restores the seat through the store notification above.
+  if (selection == null) return null
+  const card = cardVariantFor(selection.provider)
   // `card` identifies both the variant and its routes: a selection under either
   // provider resolves to exactly one card's status/probe pair, so the control
-  // can never read one variant's state while probing the other.
-  const key = card === undefined || selection === undefined ? undefined : `${card.id}:${selection.model}`
+  // can never read one variant's state while probing the other. A foreign
+  // provider hides the seat; a WorkBuddy one mounts it fresh.
   // A new selection gets fresh state; a late response cannot target the new model.
-  return card === undefined || selection === undefined || key === undefined
+  return card === undefined
     ? null
-    : <ModelProbe key={key} model={selection.model} card={card} label={useLabel(t)} t={t} />
+    : <ModelProbe key={`${card.id}:${selection.model}`} model={selection.model} card={card} label={useLabel(t)} t={t} />
 }
 
 function ModelProbe({ model, card, label, t }: {

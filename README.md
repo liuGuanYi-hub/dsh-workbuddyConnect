@@ -13,7 +13,7 @@
 ```text
 请帮我安装并验证 DSH（DeepSeek Harness）插件 dsh-workbuddy-connect（项目地址：https://github.com/corrinehu/dsh-workbuddy-connect）：
 先阅读项目 README，确认我实际使用的界面（Web / Desktop / TUI）与 DSH 内核版本，桌面版以 App 内置核心为准，不要用独立 CLI 的版本代替；
-再按版本对应关系从 npm 正式包安装（0.2.0-rc.2→0.7.4、rc.1→0.7.0、0.1.5–0.1.7→0.6.5），优先走本机受支持的非插件市场渠道；部分 Desktop 发行版（尤其官方 Electron 版）的 profile 由 App 管理，各发行版规则未必相同，先确认我所用的发行版，再探查其合规的安装方式，但不得绕过其校验；
+再按版本对应关系从 npm 正式包安装（0.2.0-rc.2→0.7.6、rc.1→0.7.0、0.1.5–0.1.7→0.6.5），优先走本机受支持的非插件市场渠道；部分 Desktop 发行版（尤其官方 Electron 版）的 profile 由 App 管理，各发行版规则未必相同，先确认我所用的发行版，再探查其合规的安装方式，但不得绕过其校验；
 任何本地文件或配置改动，先征得我同意并做好备份；
 装完后验证模型选择器里出现 WorkBuddy 分组，并陪我完成一次简短对话；
 若 Desktop 安装仍因 generation 校验失败（如 @types/retry 误报），请如实报告、参照上游 dataelement/dsh-desktop#688，并建议我改用独立的 Web / TUI，不要修改依赖包或绕过校验。
@@ -23,7 +23,7 @@
 
 | DSH 内核 | 推荐插件版 |
 |---|---|
-| 0.2.0-rc.2 | 0.7.4（npm latest） |
+| 0.2.0-rc.2 | 0.7.6（npm latest） |
 | 0.2.0-rc.1 | 0.7.0 |
 | 0.1.5 – 0.1.7 | 0.6.5 |
 
@@ -31,8 +31,8 @@
 <summary>手动安装（命令行，仅 Web / TUI）</summary>
 
 ```sh
-# Web（按实际内核固定版本，示例为 0.2.0-rc.2 → 0.7.4；也可用 github:corrinehu/dsh-workbuddy-connect 从源码安装）
-dsh plugin --profile web add dsh-workbuddy-connect@0.7.4
+# Web（按实际内核固定版本，示例为 0.2.0-rc.2 → 0.7.6；也可用 github:corrinehu/dsh-workbuddy-connect 从源码安装）
+dsh plugin --profile web add dsh-workbuddy-connect@0.7.6
 dsh web
 
 # TUI（示例为 0.1.x 内核；该 profile 需用 pnpm 11 安装，如 npx pnpm@11）
@@ -62,7 +62,7 @@ dsh --profile dsh-tui
 
 - **推理档位**：WorkBuddy 明确声明的档位会直接显示，例如 GLM-5.3 和 GLM-5.3-Flash 可选 low / high / max。未声明档位的模型可在 Web 和 Desktop 的模型选择器中手动检测（发送少量请求，可能消耗积分）；未检测或没有可用档位的模型使用 WorkBuddy 默认档位。
 
-- **余额速览**：选中 WorkBuddy / WorkBuddy AI 模型时，输入框底部在模型选择器旁显示当前账号的剩余积分（如 `WB.3,401（积分）`、国际版 `WB AI.3,401（积分）`）。积分不自动轮询（每次读取都是真实计费查询），挂载时读取一次后可点旁边的 ↻ 手动刷新。
+- **余额速览**：选中 WorkBuddy / WorkBuddy AI 模型时，输入框底部在模型选择器旁显示当前账号的剩余积分（如 `WB.3,401（积分）`、国际版 `WB AI.3,401（积分）`）。积分不自动轮询（每次读取都是真实计费查询），挂载时读取一次后可点旁边的 ↻ 手动刷新。切换会话时组件可能短暂隐藏，模型选择就绪后自动恢复；即使模型没有推理档位检测入口或余额读取失败，刷新按钮仍保留。
 
 - **信息查看与检测**：设置 → 插件 → 对应卡片可查看账号、令牌有效期、剩余积分和模型优惠，也可手动刷新模型列表并查看当前列表来自上游还是内置兜底，或对可检测模型手动检测推理档位。DSH 0.1.5 的入口在「设置 → 插件」，0.1.6+ 移到主界面左侧栏「插件」面板（workbuddy-connect → 查看）；「设置 → 模型」页两代都不显示 WorkBuddy 条目，属有意设计。
 
@@ -113,7 +113,7 @@ dsh plugin --profile web exec dsh-workbuddy-connect doctor --provider workbuddy-
 ## 已知限制
 
 - 在 macOS 的 DSH Web / Desktop / TUI 下验证通过（0.3.2 起要求 `0.1.5-rc.1`+、Node 22+；TUI 需终端界面插件 `0.10.0-beta.5` 及以上，见安装章节说明）。Windows 会依次探测 Local 与 Roaming AppData；WSL 会优先从挂载的 Windows 用户目录读取登录凭据。若 Windows 与 Linux 用户名不同且 Windows 环境变量未传入 WSL，请通过 `WORKBUDDY_AUTH_FILE`（国际版为 `WORKBUDDY_AI_AUTH_FILE`）指定实际位置。
-- **加密桌面凭据的解密程序定位**：解密程序在 macOS 与 Windows 上会自动探测；Windows 上国内版先查默认路径 `%LOCALAPPDATA%\Programs\WorkBuddy\WorkBuddy.exe`，再查卸载注册表记录，国际版没有已验证的默认路径、仅查注册表。自动探测失败时，可用 `WORKBUDDY_ELECTRON_BIN`（国内版）或 `WORKBUDDY_AI_ELECTRON_BIN`（国际版）显式指定可执行文件，设置后需完全退出并重启 DSH 才生效。Linux 无法自动发现，需显式指定。
+- **加密桌面凭据的解密程序定位**：解密程序在 macOS 与 Windows 上会自动探测；Windows 上国内版先查默认路径 `%LOCALAPPDATA%\Programs\WorkBuddy\WorkBuddy.exe`，再查卸载注册表记录，国际版没有已验证的默认路径、仅查注册表。自动探测失败时，可用 `WORKBUDDY_ELECTRON_BIN`（国内版）或 `WORKBUDDY_AI_ELECTRON_BIN`（国际版）显式指定可执行文件，设置后需完全退出并重启 DSH 才生效。Linux 无法自动发现，需显式指定。WSL 下调用 Windows 侧解密程序时，插件会自动把子进程 `WSLENV` 中的 `ELECTRON_RUN_AS_NODE` 条目规范化为单一安全旗标（含 `/w` 转发、不做路径转换，其余条目原样保留），无需手动设置。此改动已通过离线回归测试，尚未完成 WSL2 / Windows 真机验证。
 - **国际版的模型目录来自 App 界面接口**：服务端按 User-Agent 分流下发，属私有实现，上游改动可能使其失效。届时插件按「本账号上次成功目录 → 内置目录」降级，并在卡片上标明来源（实时 / 已保存 / 内置）、更新时间与失败原因，但不能保证长期兼容。国内版目录走官方 CLI 同款接口，不受此影响。
 - **国际版仍未覆盖的环境**：Windows / WSL / Linux 下国际版 App 的版本读取尚未找到可靠来源，会退回最近保存的版本或内置值。macOS 上已通过真实 shim 验证 GPT 系完整回复、工具调用与续轮。
 - **无凭据时的行为变化**：某版 App 从未登录、也没留下插件自留副本时，该版模型分组不再显示。此前国内版会显示一份内置兜底列表，但那些模型选了必然报错。
@@ -127,7 +127,7 @@ dsh plugin --profile web exec dsh-workbuddy-connect doctor --provider workbuddy-
 
 | DSH 内核 | 推荐插件版 | 注意事项 |
 |---|---|---|
-| `0.2.0-rc.2` | `0.7.4`（npm latest） | 当前最新线；Windows 注册表发现已修复，诊断与稳定性改进，勿停留在 0.7.2。 |
+| `0.2.0-rc.2` | `0.7.6`（npm latest） | 当前最新线；修复企业账号模型目录缺项与国际版对话被渠道校验拦截，勿停留在有注册表回归的 0.7.2。 |
 | `0.2.0-rc.1` | `0.7.0` | 0.7.1 起不再支持 rc.1，请停留本版。 |
 | `0.1.5` – `0.1.7` | `0.6.5` | 旧内核最终版；0.7.0 起仅面向 0.2.0。 |
 | `0.1.2-rc.1` | `0.3.1` | 更早旧线，仅历史维护。 |
@@ -135,14 +135,16 @@ dsh plugin --profile web exec dsh-workbuddy-connect doctor --provider workbuddy-
 
 历次更新（完整记录见 [releases](https://github.com/corrinehu/dsh-workbuddy-connect/releases)）：
 
+- **0.7.6**：修复企业账号模型目录缺少 `glm-5.3-flashx`（[#123](https://github.com/corrinehu/dsh-workbuddy-connect/issues/123)），修复国际版对话请求被上游渠道校验拦截（[#139](https://github.com/corrinehu/dsh-workbuddy-connect/issues/139) / [#142](https://github.com/corrinehu/dsh-workbuddy-connect/issues/142)）。
+- **0.7.5**：修复切换会话后输入框余额与刷新按钮消失（[#125](https://github.com/corrinehu/dsh-workbuddy-connect/issues/125) / [#132](https://github.com/corrinehu/dsh-workbuddy-connect/issues/132)），修复 WSL 调用 Windows 凭据解密程序的环境转发（[#133](https://github.com/corrinehu/dsh-workbuddy-connect/issues/133)），README 收录社区项目（[#130](https://github.com/corrinehu/dsh-workbuddy-connect/issues/130)）。
 - **0.7.4**：Windows 诊断与稳定性改进：注册表子进程输出超限准确分类、跨平台测试假设修正（[#62](https://github.com/corrinehu/dsh-workbuddy-connect/issues/62)），安装说明重排。
 - **0.7.3**：修复 Windows 非默认安装路径下注册表自动发现失败（[#105](https://github.com/corrinehu/dsh-workbuddy-connect/issues/105)）。
-- **0.7.2**：pi-ai 改为插件自带依赖，并修复推理字段请求被拒（[#92](https://github.com/corrinehu/dsh-workbuddy-connect/issues/92)）；该版存在 Windows 注册表回归，请直接使用 0.7.4。
+- **0.7.2**：pi-ai 改为插件自带依赖，并修复推理字段请求被拒（[#92](https://github.com/corrinehu/dsh-workbuddy-connect/issues/92)）；该版存在 Windows 注册表回归，请使用 0.7.4 或更新的正式版本。
 - **0.7.1**：收窄 pi-ai 依赖范围。
 - **0.7.0**：适配 DSH 0.2.0 的设置服务改造，不再支持 0.1.x。
 - **0.6.5**：0.1.x 线最终版本。
 
-固定版本安装示例：`dsh plugin --profile web add dsh-workbuddy-connect@0.7.4`。
+固定版本安装示例：`dsh plugin --profile web add dsh-workbuddy-connect@0.7.6`。
 
 **不要把 profile 级的 `@earendil-works/pi-ai` 升到 1.x**：本插件与 `0.2.0-rc.2` 这一代内核都要求 `^0.87.1`（0.7.2 起由插件自带），第三方插件管理器的「可更新」提示不校验 peer 约束、不能照做（[#86](https://github.com/corrinehu/dsh-workbuddy-connect/issues/86)）；为此历史遗留的 `overrides: {'@earendil-works/pi-ai': '0.87.1'}` 在确认其他插件不依赖前也不要盲目移除。
 
@@ -152,6 +154,13 @@ dsh plugin --profile web exec dsh-workbuddy-connect doctor --provider workbuddy-
 - 使用者需遵守 WorkBuddy 的服务条款；因使用本项目产生的任何后果（包括但不限于账号被限制、额度被清空、服务中断），由使用者自行承担。
 - 本项目作者不对任何因使用或滥用本项目产生的直接或间接损失负责。
 - 本项目与腾讯、WorkBuddy、DeepSeek 均无关联，未获其授权或认可；文中出现的名称仅用于描述兼容关系，其商标权利归各自所有。
+
+## 相关项目 / 社区生态
+
+- **[HanaAgent](https://github.com/liliMozi/openhanako)**：独立的个人 AI Agent 项目。
+- **[hana-workbuddy-connect](https://github.com/miaoyongxu/hana-workbuddy-connect)**：社区维护的非官方适配项目，复用 `dsh-workbuddy-connect` 的部分实现，为 HanaAgent 接入 WorkBuddy / WorkBuddy AI 模型。
+
+以上项目均由第三方独立维护。其中，`hana-workbuddy-connect` 的兼容性、安全性及使用支持由其维护者负责。收录不代表官方背书，也不意味着本插件对内部接口提供稳定性或兼容性承诺。
 
 ## 致谢
 

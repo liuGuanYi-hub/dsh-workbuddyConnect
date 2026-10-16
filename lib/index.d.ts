@@ -481,6 +481,13 @@ declare class WorkBuddyUpstreamClient {
    * advertises is exactly the one its own requests can use. The international
    * variant has no CLI identity, so it keeps the App-shaped UA.
    *
+   * The same split has an account-identity axis (issue #123): an enterprise
+   * account must also present `X-User-Id` + `X-Enterprise-Id`, or the gateway
+   * answers with the personal roster. CN sends that pair via
+   * {@link identityHeaders} whenever the credential carries both halves; the
+   * international gateway's split was never measured against account headers,
+   * so it keeps its documented shape.
+   *
    * Membership is the `cli` roster intersected with the usable rows (see
    * {@link parseModelCatalog}); the promo badges the product document does
    * not carry are merged in from a best-effort console read — see
@@ -950,6 +957,13 @@ interface WorkBuddyAtRestKeyProviderOptions {
   /** Platform override for deterministic discovery tests. */
   platform?: NodeJS.Platform;
   /**
+   * Whether the helper spawn crosses WSL→Windows interop. Injectable so tests
+   * can simulate a WSL host on any platform; defaults to the shared
+   * {@link isWsl} check. Only consulted for the key-helper spawn (#133) —
+   * never for discovery.
+   */
+  wsl?: () => boolean;
+  /**
    * Total budget for one discovery run, covering the search and every
    * candidate check. Injectable so tests can exercise exhaustion without
    * waiting out the production 10s.
@@ -976,6 +990,7 @@ interface WorkBuddyAtRestKeyProviderOptions {
   private readonly platform;
   private readonly discoveryBudgetMs;
   private readonly timeoutMs;
+  private readonly wsl;
   private readonly source;
   private readonly spawnHelper;
   /**
