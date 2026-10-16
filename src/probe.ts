@@ -62,6 +62,18 @@ export interface ProbeAttempt {
   errorCode?: string
   /** Free-form detail for logs; never shown as a capability claim. */
   detail?: string
+  /**
+   * The upstream's raw error body, truncated.
+   *
+   * Kept separate from {@link detail} because the two answer different needs.
+   * `detail` is a short human-readable line for a log, and for a JSON body it
+   * collapses to just the `extError.code`. A caller that must *classify* the
+   * failure — the quota check reads it for insufficient-credit wording — needs
+   * the body itself, since the verdict can be spelled in `displayMsg`/`msg`
+   * while `extError` carries an unrelated code. Passing the code alone to
+   * `classifyUpstreamError` would miss exactly the refusals that matter most.
+   */
+  body?: string
 }
 
 /** How one attempt is performed; the caller owns credentials and HTTP. */

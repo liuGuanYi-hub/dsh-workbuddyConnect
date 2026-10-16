@@ -1255,7 +1255,7 @@ export class WorkBuddyUpstreamClient {
 }
 
 /** Pull `extError.code` out of an upstream error body, if it is shaped that way. */
-function errorCodeOf(text: string): { errorCode?: string; detail?: string } {
+function errorCodeOf(text: string): { errorCode?: string; detail?: string; body?: string } {
   try {
     const parsed: unknown = JSON.parse(text)
     if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
@@ -1263,13 +1263,13 @@ function errorCodeOf(text: string): { errorCode?: string; detail?: string } {
       const extError = wrapped['extError']
       if (typeof extError === 'object' && extError !== null && !Array.isArray(extError)) {
         const code = (extError as Record<string, unknown>)['code']
-        if (typeof code === 'string') return { errorCode: code, detail: code }
+        if (typeof code === 'string') return { errorCode: code, detail: code, body: text }
       }
     }
   } catch {
     // Not JSON: fall through to a plain detail line.
   }
-  return { detail: text.slice(0, 200) }
+  return { detail: text.slice(0, 200), body: text }
 }
 
 /**

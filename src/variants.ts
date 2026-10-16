@@ -71,6 +71,15 @@ export interface WorkBuddyVariant {
    * mark a parked international account as spent.
    */
   quotaFilename: string
+  /**
+   * Basename of the plugin-owned last-quota-sweep file under `$DSH_HOME`.
+   *
+   * One per variant for the same reason as the verdicts beside it, and its own
+   * file rather than a section of them: a sweep result and a chat refusal are
+   * learned differently and expire differently, and the CLI reads the former
+   * while the chat path writes the latter.
+   */
+  quotaCheckFilename: string
   /** Same-origin status route consumed by this variant's card. */
   statusPath: string
   /** Same-origin probe-control route consumed by this variant's card. */
@@ -138,6 +147,7 @@ export const WORKBUDDY_VARIANTS: readonly WorkBuddyVariant[] = [
     catalogFilename: '.workbuddy-catalog.json',
     visibilityFilename: '.workbuddy-model-visibility.json',
     quotaFilename: '.workbuddy-quota-state.json',
+    quotaCheckFilename: '.workbuddy-quota-check.json',
     statusPath: WORKBUDDY_STATUS_PATH,
     probePath: WORKBUDDY_PROBE_PATH,
   },
@@ -169,6 +179,7 @@ export const WORKBUDDY_VARIANTS: readonly WorkBuddyVariant[] = [
     catalogFilename: '.workbuddy-ai-catalog.json',
     visibilityFilename: '.workbuddy-ai-model-visibility.json',
     quotaFilename: '.workbuddy-ai-quota-state.json',
+    quotaCheckFilename: '.workbuddy-ai-quota-check.json',
     statusPath: WORKBUDDY_AI_STATUS_PATH,
     probePath: WORKBUDDY_AI_PROBE_PATH,
   },
