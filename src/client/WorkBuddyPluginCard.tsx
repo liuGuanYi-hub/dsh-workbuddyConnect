@@ -376,6 +376,52 @@ const accountActionsStyle: CSSProperties = {
   gap: 8,
   flex: '0 0 auto',
 }
+/**
+ * The inline rename editor, occupying the row's name slot.
+ *
+ * Matches the slot width of {@link accountNameStyle} so opening the editor does
+ * not shift the action buttons sideways, and stays a plain inline form rather
+ * than a modal: the row being edited must remain visible beside it.
+ */
+const accountRenameFormStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  flex: '1 1 auto',
+  minWidth: 0,
+}
+const accountRenameInputStyle: CSSProperties = {
+  flex: '1 1 auto',
+  minWidth: 0,
+  maxWidth: 260,
+  height: 28,
+  boxSizing: 'border-box',
+  padding: '0 8px',
+  font: 'inherit',
+  fontSize: 13,
+  color: 'var(--dsw-alias-label-primary)',
+  background: 'var(--dsw-alias-bg-primary, transparent)',
+  border: '1px solid var(--dsw-alias-border-secondary, rgba(127, 127, 127, 0.35))',
+  borderRadius: 6,
+}
+/** The rename editor's own validation line, shown under the row. */
+const accountRenameErrorStyle: CSSProperties = {
+  flex: '1 1 auto',
+  fontSize: 12,
+  lineHeight: '18px',
+  color: 'var(--dsw-alias-state-error-primary, #d92d20)',
+}
+/**
+ * Longest label the account store accepts, mirrored from
+ * `MAX_LABEL_LENGTH` in `accounts-store.ts`.
+ *
+ * Duplicated as a literal rather than imported: this file is bundled for the
+ * browser and the store module reaches for `node:fs`, so importing the
+ * constant would drag a Node-only graph into the client build. The host
+ * re-validates every write, so a drift here degrades to a server-side error
+ * rather than a corrupt slot.
+ */
+const ACCOUNT_LABEL_MAX_LENGTH = 40
 
 /**
  * Primary action of the inline confirmation. Fill and text colour come from the
@@ -890,25 +936,77 @@ function ProbeSection({ probe, models, t, onDetect, onClear, busy }: {
  *
  * The desktop app holds one session at a time, so this is where several are
  * kept. Capture archives whatever the app is signed into right now; switch
- * moves which parked account the plugin serves; remove unparks. Nothing here
- * signs the desktop app out or writes its auth file, and the remove control
- * says so, because "remove account" could otherwise be read as "sign out".
+ * moves which parked account the plugin serves; rename relabels one in place;
+ * remove unparks. Nothing here signs the desktop app out or writes its auth
+ * file, and the remove control says so, because "remove account" could
+ * otherwise be read as "sign out".
+ *
+ * Renaming is deliberately inline rather than a prompt dialog: the row must
+ * stay visible while its name is edited, and `window.prompt` is unavailable in
+ * some embedded seats. The editor holds its own draft and is closed by the
+ * write itself on success — never by optimistic local editing, because the
+ * label the card shows always comes back from the host.
  *
  * Rendered only when the status document carries an account section, so a host
  * without an account store shows no controls rather than dead ones.
  */
-function AccountSection({ section, busyId, onCapture, onUse, onRemove, t }: {
+function AccountSection({ section, busyId, onCapture, onUse, onRename, onRemove, t }: {
   section: WorkBuddyWebAccountsSection
   /** The account id (or `capture`) with a write in flight, if any. */
   busyId: string | undefined
   onCapture: () => void
   onUse: (id: string) => void
+  /** Resolves true when the host accepted the new name. */
+  onRename: (id: string, label: string) => Promise<boolean>
   onRemove: (id: string) => void
   t: WorkBuddyPluginCardInjected['t']
 }): React.ReactNode {
   const anyBusy = busyId !== undefined
+  /** The row whose rename editor is open, if any. At most one at a time. */
+  const [editingId, setEditingId] = useState<string>()
+  /** The in-progress text; the rendered label always comes from the host. */
+  const [draft, setDraft] = useState('')
+  /** Why the draft was refused, shown until the next edit clears it. */
+  const [renameError, setRenameError] = useState<string>()
   const nameOf = (account: WorkBuddyWebAccount): string =>
     account.label ?? account.nickname ?? t('accountsUnknownName')
+
+  /** Open the editor for one row, seeded with the name it currently shows. */
+  const beginRename = (account: WorkBuddyWebAccount): void => {
+    setEditingId(account.id)
+    setDraft(account.label ?? account.nickname ?? '')
+    setRenameError(undefined)
+  }
+
+  /** Close the editor without writing. */
+  const cancelRename = (): void => {
+    setEditingId(undefined)
+    setDraft('')
+    setRenameError(undefined)
+  }
+
+  /**
+   * Commit the draft.
+   *
+   * The length check mirrors the host's on purpose: a typo gets immediate
+   * feedback instead of a round trip whose only outcome is a refusal. The host
+   * still enforces it, so this is UX rather than a guard.
+   *
+   * A blank draft is refused too — the store reads an empty label as "clear
+   * it", which would silently drop the user's name and fall back to the
+   * nickname. Clearing is what the store's own `remove` path is for.
+   */
+  const commitRename = async (id: string): Promise<void> => {
+    const trimmed = draft.trim()
+    if (trimmed.length === 0 || trimmed.length > ACCOUNT_LABEL_MAX_LENGTH) {
+      setRenameError(t('accountsRenameInvalid', { max: ACCOUNT_LABEL_MAX_LENGTH }))
+      return
+    }
+    const accepted = await onRename(id, trimmed)
+    // Closed only on success: a refused write keeps the draft so the user can
+    // correct it rather than retyping from scratch.
+    if (accepted) cancelRename()
+  }
 
   return (
     <div style={quotaGroupStyle}>
@@ -924,50 +1022,104 @@ function AccountSection({ section, busyId, onCapture, onUse, onRemove, t }: {
             {section.accounts.map(account => (
               <li key={account.id} style={accountRowStyle}>
                 <span style={dotStyle(account.active ? 'signed-in' : 'signed-out')} aria-hidden />
-                <span style={accountNameStyle}>
-                  {nameOf(account)}
-                  {account.active ? <span style={accountTagStyle}>{t('accountsActive')}</span> : null}
-                  {account.expired ? <span style={accountTagStyle}>{t('accountsExpired')}</span> : null}
-                </span>
-                <span style={accountActionsStyle}>
-                  {account.active
-                    ? null
-                    : (
-                      <button
-                        type="button"
-                        style={buttonStyle}
+                {editingId === account.id
+                  ? (
+                    <form
+                      style={accountRenameFormStyle}
+                      onSubmit={(event) => {
+                        // A bare <form> navigates the whole page on Enter;
+                        // submitting through the handler keeps the SPA put.
+                        event.preventDefault()
+                        void commitRename(account.id)
+                      }}
+                    >
+                      <input
+                        // Focused on open so the editor is usable from the
+                        // keyboard, matching the click that revealed it.
+                        autoFocus
+                        style={accountRenameInputStyle}
+                        value={draft}
+                        maxLength={ACCOUNT_LABEL_MAX_LENGTH}
+                        placeholder={t('accountsRenamePlaceholder')}
+                        aria-label={t('accountsRenamePlaceholder')}
                         disabled={anyBusy}
-                        onClick={() => { onUse(account.id) }}
-                      >
-                        {busyId === account.id ? t('accountsUsing') : t('accountsUse')}
+                        onChange={(event) => {
+                          setDraft(event.target.value)
+                          setRenameError(undefined)
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Escape') cancelRename()
+                        }}
+                      />
+                      <button type="submit" style={primaryButtonStyle} disabled={anyBusy}>
+                        {busyId === `rename:${account.id}` ? t('accountsRenaming') : t('accountsRenameSave')}
                       </button>
+                      <button type="button" style={buttonStyle} disabled={anyBusy} onClick={cancelRename}>
+                        {t('accountsRenameCancel')}
+                      </button>
+                      {renameError === undefined
+                        ? null
+                        : <span style={accountRenameErrorStyle} role="alert">{renameError}</span>}
+                    </form>
+                    )
+                  : (
+                    <>
+                      <span style={accountNameStyle}>
+                        {nameOf(account)}
+                        {account.active ? <span style={accountTagStyle}>{t('accountsActive')}</span> : null}
+                        {account.expired ? <span style={accountTagStyle}>{t('accountsExpired')}</span> : null}
+                      </span>
+                      <span style={accountActionsStyle}>
+                        <button
+                          type="button"
+                          style={buttonStyle}
+                          disabled={anyBusy}
+                          onClick={() => { beginRename(account) }}
+                        >
+                          {t('accountsRename')}
+                        </button>
+                        {account.active
+                          ? null
+                          : (
+                            <button
+                              type="button"
+                              style={buttonStyle}
+                              disabled={anyBusy}
+                              onClick={() => { onUse(account.id) }}
+                            >
+                              {busyId === account.id ? t('accountsUsing') : t('accountsUse')}
+                            </button>
+                          )}
+                        <button
+                          type="button"
+                          style={buttonStyle}
+                          disabled={anyBusy}
+                          /*
+                           * Confirmed because the action is destructive to
+                           * stored state, and because the wording has to make
+                           * clear the desktop app's own sign-in survives it —
+                           * the opposite reading ("remove" = sign out) is the
+                           * damaging one.
+                           */
+                          onClick={() => {
+                            // `typeof` rather than a bare reference: this runs
+                            // inside a click handler, and in a seat without a
+                            // global `window` (a test renderer, a non-browser
+                            // host) the bare form throws where `typeof` is
+                            // simply "undefined".
+                            const confirmFn = typeof globalThis.window === 'undefined'
+                              ? undefined
+                              : globalThis.window.confirm
+                            if (confirmFn === undefined || confirmFn(t('accountsRemoveConfirm', { name: nameOf(account) }))) {
+                              onRemove(account.id)
+                            }
+                          }}
+                        >
+                          {busyId === `remove:${account.id}` ? t('accountsRemoving') : t('accountsRemove')}
+                        </button>
+                      </span>
+                    </>
                     )}
-                  <button
-                    type="button"
-                    style={buttonStyle}
-                    disabled={anyBusy}
-                    /*
-                     * Confirmed because the action is destructive to stored
-                     * state, and because the wording has to make clear the
-                     * desktop app's own sign-in survives it — the opposite
-                     * reading ("remove" = sign out) is the damaging one.
-                     */
-                    onClick={() => {
-                      // `typeof` rather than a bare reference: this runs inside
-                      // a click handler, and in a seat without a global
-                      // `window` (a test renderer, a non-browser host) the bare
-                      // form throws where `typeof` is simply "undefined".
-                      const confirmFn = typeof globalThis.window === 'undefined'
-                        ? undefined
-                        : globalThis.window.confirm
-                      if (confirmFn === undefined || confirmFn(t('accountsRemoveConfirm', { name: nameOf(account) }))) {
-                        onRemove(account.id)
-                      }
-                    }}
-                  >
-                    {busyId === `remove:${account.id}` ? t('accountsRemoving') : t('accountsRemove')}
-                  </button>
-                </span>
               </li>
             ))}
           </ul>
@@ -1283,17 +1435,21 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
   }, [control])
 
   /**
-   * Perform one account write (capture, switch, remove).
+   * Perform one account write (capture, switch, rename, remove).
    *
    * Kept separate from {@link control} because the two differ in their guards:
    * account writes need no probe key semantics beyond the header, and they must
    * re-read on *failure* as well as success — a switch that the host refused
    * leaves the card's list disagreeing with disk, and the honest state is the
    * host's, not the one the card was showing.
+   *
+   * Resolves whether the host accepted the write. The rename editor is the only
+   * caller that consumes it, because it must stay open on a refusal rather than
+   * discard the draft; mark and remove ignore it.
    */
-  const accountAction = useCallback(async (action: WorkBuddyAccountsAction, busyKey: string): Promise<void> => {
+  const accountAction = useCallback(async (action: WorkBuddyAccountsAction, busyKey: string): Promise<boolean> => {
     const key = status?.status === 'signed-in' ? status.probeKey : undefined
-    if (key === undefined) return
+    if (key === undefined) return false
     setAccountBusy(busyKey)
     const controller = trackController()
     try {
@@ -1316,6 +1472,7 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
         throw new Error(message)
       }
       await refresh(controller.signal)
+      return true
     } catch (error: unknown) {
       if (mounted.current && controller.signal.aborted !== true) {
         // Re-read *first*, then report: `refresh` clears the notice on success,
@@ -1330,6 +1487,7 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
           setReadFailure(t('accountsError', { message: error instanceof Error ? error.message : t('requestFailed') }))
         }
       }
+      return false
     } finally {
       manualControllers.current.delete(controller)
       if (mounted.current) setAccountBusy(undefined)
@@ -1343,6 +1501,16 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
   const useAccount = useCallback((id: string): void => {
     void accountAction({ action: 'use', id }, id)
   }, [accountAction])
+
+  /**
+   * Rename one parked account.
+   *
+   * Returns the host's verdict to the editor rather than only firing and
+   * forgetting: `accountAction` already routes a refusal into the card's error
+   * notice, and the editor needs the boolean to decide whether to close.
+   */
+  const renameAccount = useCallback((id: string, label: string): Promise<boolean> =>
+    accountAction({ action: 'rename', id, label }, `rename:${id}`), [accountAction])
 
   const removeAccount = useCallback((id: string): void => {
     // Prefixed so a remove in flight is distinguishable from a switch on the
@@ -1525,6 +1693,7 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
                           busyId={accountBusy}
                           onCapture={captureAccount}
                           onUse={useAccount}
+                          onRename={renameAccount}
                           onRemove={removeAccount}
                           t={t}
                         />

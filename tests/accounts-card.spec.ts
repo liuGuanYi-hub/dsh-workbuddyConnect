@@ -283,4 +283,127 @@ describe('WorkBuddy account switcher', () => {
     const renderer = await mountCard()
     expect(textOf(renderer)).toContain('/custom/slot/dir')
   })
+
+  /** Find the rename editor's text input, when a row is being edited. */
+  function renameInput(renderer: ReactTestRenderer): ReturnType<ReactTestRenderer['root']['findAll']>[number] | undefined {
+    return renderer.root.findAll(node => node.type === 'input')[0]
+  }
+
+  /** Type into the open editor. */
+  async function type(renderer: ReactTestRenderer, value: string): Promise<void> {
+    const input = renameInput(renderer)
+    expect(input).toBeDefined()
+    await act(async () => { input!.props.onChange({ target: { value } }) })
+  }
+
+  /**
+   * Submit the open editor the way a user does.
+   *
+   * The form's `onSubmit` is invoked rather than a click on the Save button:
+   * Save is `type="submit"` and therefore carries no `onClick` of its own, and
+   * React's `onSubmit` is exactly the handler the browser would call for both
+   * Enter and a click. It runs inside `act` because the handler awaits the
+   * write and only then updates state, and the assertions below read the tree
+   * that results.
+   */
+  async function save(renderer: ReactTestRenderer): Promise<void> {
+    const form = renderer.root.findAll(node => node.type === 'form')[0]
+    expect(form).toBeDefined()
+    await act(async () => {
+      // `preventDefault` is stubbed because the handler calls it to keep the
+      // SPA from navigating; the synthetic event is not available here.
+      await form!.props.onSubmit({ preventDefault: () => {} })
+    })
+    // The write is held open by the fetch stub; release it so the handler's
+    // post-await state updates land inside an act() boundary too.
+    await act(async () => { released.forEach(release => { release() }) })
+    released = []
+  }
+
+  it('opens an inline editor seeded with the current name', async () => {
+    const renderer = await mountCard()
+    const rename = button(renderer, t('accountsRename'))
+    expect(rename).toBeDefined()
+
+    await act(async () => { rename!.props.onClick() })
+    const input = renameInput(renderer)
+    expect(input).toBeDefined()
+    // Seeded from the label so the user edits rather than retypes.
+    expect(input!.props.value).toBe('工作号')
+    expect(button(renderer, t('accountsRenameSave'))).toBeDefined()
+    expect(button(renderer, t('accountsRenameCancel'))).toBeDefined()
+  })
+
+  it('sends a rename action with the new label and closes on success', async () => {
+    postResponse = { ok: true, body: { state: 'renamed', id: 'acct-1', label: '新名字' } }
+    const renderer = await mountCard()
+
+    await act(async () => { button(renderer, t('accountsRename'))!.props.onClick() })
+    await type(renderer, '  新名字  ')
+    await save(renderer)
+
+    // Trimmed before it leaves the card; the host trims again.
+    expect(posts[0]?.body).toEqual({ action: 'rename', id: 'acct-1', label: '新名字' })
+    expect(posts[0]?.url).toContain('/accounts')
+
+    await act(async () => { released.forEach(release => { release() }) })
+    // The editor is gone once the write was accepted.
+    expect(renameInput(renderer)).toBeUndefined()
+  })
+
+  it('keeps the draft open when the host refuses the rename', async () => {
+    postResponse = { ok: false, status: 400, body: { error: 'invalid-label', message: 'label must be at most 40 characters' } }
+    const renderer = await mountCard()
+
+    await act(async () => { button(renderer, t('accountsRename'))!.props.onClick() })
+    await type(renderer, '太长')
+    await save(renderer)
+    await act(async () => { released.forEach(release => { release() }) })
+
+    // Still editing, with the text preserved so it can be corrected.
+    expect(renameInput(renderer)?.props.value).toBe('太长')
+    expect(textOf(renderer)).toContain(t('accountsError', { message: 'label must be at most 40 characters' }))
+  })
+
+  it('refuses an over-long name before any request is sent', async () => {
+    const renderer = await mountCard()
+    await act(async () => { button(renderer, t('accountsRename'))!.props.onClick() })
+    await type(renderer, 'x'.repeat(41))
+    await save(renderer)
+
+    expect(posts).toHaveLength(0)
+    expect(textOf(renderer)).toContain(t('accountsRenameInvalid', { max: 40 }))
+    expect(renameInput(renderer)).toBeDefined()
+  })
+
+  it('refuses a blank name rather than clearing the label', async () => {
+    const renderer = await mountCard()
+    await act(async () => { button(renderer, t('accountsRename'))!.props.onClick() })
+    await type(renderer, '   ')
+    await save(renderer)
+
+    // A blank draft must not reach the store: an empty label there means
+    // "clear it", which would silently drop the user's name.
+    expect(posts).toHaveLength(0)
+    expect(textOf(renderer)).toContain(t('accountsRenameInvalid', { max: 40 }))
+  })
+
+  it('abandons the draft when the rename is cancelled', async () => {
+    const renderer = await mountCard()
+    await act(async () => { button(renderer, t('accountsRename'))!.props.onClick() })
+    await type(renderer, '改了但不保存')
+    await act(async () => { button(renderer, t('accountsRenameCancel'))!.props.onClick() })
+
+    expect(posts).toHaveLength(0)
+    expect(renameInput(renderer)).toBeUndefined()
+    // The original name is back on the row.
+    expect(textOf(renderer)).toContain('工作号')
+  })
+
+  it('offers rename on the account already in use', async () => {
+    // Unlike switching, renaming is meaningful for the served account too.
+    const renderer = await mountCard()
+    expect(button(renderer, t('accountsUse'))).toBeUndefined()
+    expect(button(renderer, t('accountsRename'))).toBeDefined()
+  })
 })
