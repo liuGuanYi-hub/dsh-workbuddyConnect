@@ -15,7 +15,7 @@ import { normalizeCredits } from './upstream.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
 import { WORKBUDDY_STATUS_PATH } from './status-paths.ts'
-import type { WorkBuddyWebCatalog, WorkBuddyWebModelBadge, WorkBuddyWebAccountsSection, WorkBuddyWebProbeSection, WorkBuddyWebStatus, WorkBuddyWebVisibilitySection } from './status-paths.ts'
+import type { WorkBuddyWebCatalog, WorkBuddyWebModelBadge, WorkBuddyWebAccountsSection, WorkBuddyWebProbeSection, WorkBuddyWebQuotaCheckSection, WorkBuddyWebStatus, WorkBuddyWebVisibilitySection } from './status-paths.ts'
 
 export { WORKBUDDY_STATUS_PATH } from './status-paths.ts'
 export type { WorkBuddyWebStatus } from './status-paths.ts'
@@ -61,6 +61,19 @@ export interface WorkBuddyStatusRouteOptions {
    * first capture.
    */
   accounts?: () => Promise<WorkBuddyWebAccountsSection | undefined>
+  /**
+   * The model a `check-quota` sweep targets when the card names none. Its
+   * presence is the card's capability signal for the quota button; a host that
+   * cannot run a sweep omits it and the card renders no button.
+   */
+  quotaCheckModel?: string
+  /**
+   * The last on-demand quota sweep, when one exists. Undefined when the host
+   * has no account store; a defined getter may still answer `undefined`, which
+   * is the card's signal that no check has been run rather than that one found
+   * nothing.
+   */
+  quotaCheck?: () => WorkBuddyWebQuotaCheckSection | undefined
   /**
    * Route path to mount. Defaults to the CN variant's path so existing callers
    * and tests keep their behaviour; the international variant passes its own.
@@ -208,6 +221,15 @@ export async function workBuddyWebStatus(
   // the document its balance, and so the field ordering stays as declared.
   const accounts = deps.accounts === undefined ? undefined : await deps.accounts()
   const withAccounts: WorkBuddyWebStatus = accounts === undefined ? probed : { ...probed, accounts }
+  // The last quota sweep rides beside the account rows it describes, and its
+  // capability signal travels with it: a document with no `quotaCheckModel` is
+  // one whose host cannot run a sweep, and the card renders no button for it.
+  const quotaCheck = deps.quotaCheck?.()
+  const withQuotaCheck: WorkBuddyWebStatus = {
+    ...withAccounts,
+    ...deps.quotaCheckModel === undefined ? {} : { quotaCheckModel: deps.quotaCheckModel },
+    ...quotaCheck === undefined ? {} : { quotaCheck },
+  }
   try {
     const credential = await deps.store.current()
     if (credential !== undefined) {
@@ -215,12 +237,12 @@ export async function workBuddyWebStatus(
       // `unlimited` and `cycleResetTime` ride along as-is: the card must see
       // "no cap" as its own state, and the fetch only sets them when the
       // upstream actually reported them.
-      return { ...withAccounts, credits }
+      return { ...withQuotaCheck, credits }
     }
   } catch (error: unknown) {
-    return { ...withAccounts, creditsError: safeMessage(error) }
+    return { ...withQuotaCheck, creditsError: safeMessage(error) }
   }
-  return withAccounts
+  return withQuotaCheck
 }
 
 /** The status route's request handler, extracted so tests can mount it on a bare server. */

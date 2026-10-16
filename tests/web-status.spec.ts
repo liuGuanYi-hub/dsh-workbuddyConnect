@@ -197,3 +197,57 @@ describe('maximum-context preference capability', () => {
     expect(document).toHaveProperty('probe')
   })
 })
+
+/**
+ * The quota-check fields of the status document.
+ *
+ * `quotaCheckModel` is the card's capability signal and `quotaCheck` its rows,
+ * so the two together decide whether the button appears at all. Getting the
+ * "absent" cases wrong is the visible failure: a card that renders a button the
+ * host cannot serve, or that shows an empty result list as a clean bill of
+ * health for accounts nobody asked about.
+ */
+describe('quota check reporting', () => {
+  it('carries the sweep and its capability model when the host offers both', async () => {
+    const port = await startStatusServer({
+      quotaCheckModel: 'deepseek-v4.1-flash',
+      quotaCheck: () => ({
+        model: 'deepseek-v4.1-flash',
+        checkedAt: 1_800_000_000_000,
+        running: false,
+        results: [{ id: 'acct-1', label: '工作号', state: 'exhausted', status: 402, checkedAt: 1_800_000_000_000 }],
+      }),
+    })
+    const document = JSON.parse((await requestOnce({
+      port, method: 'GET', headers: { host: '127.0.0.1' },
+    })).body) as Record<string, unknown>
+    expect(document['quotaCheckModel']).toBe('deepseek-v4.1-flash')
+    expect(document['quotaCheck']).toMatchObject({
+      model: 'deepseek-v4.1-flash',
+      results: [{ id: 'acct-1', label: '工作号', state: 'exhausted', status: 402 }],
+    })
+  })
+
+  it('omits both fields on a host that cannot sweep', async () => {
+    const port = await startStatusServer()
+    const document = JSON.parse((await requestOnce({
+      port, method: 'GET', headers: { host: '127.0.0.1' },
+    })).body) as Record<string, unknown>
+    expect(document).not.toHaveProperty('quotaCheck')
+    expect(document).not.toHaveProperty('quotaCheckModel')
+  })
+
+  it('keeps the capability signal beside a document whose sweep has never run', async () => {
+    // Absent `quotaCheck` means "no check yet", which is what lets the card
+    // render the button with no rows rather than an empty verdict list.
+    const port = await startStatusServer({
+      quotaCheckModel: 'deepseek-v4.1-flash',
+      quotaCheck: () => undefined,
+    })
+    const document = JSON.parse((await requestOnce({
+      port, method: 'GET', headers: { host: '127.0.0.1' },
+    })).body) as Record<string, unknown>
+    expect(document['quotaCheckModel']).toBe('deepseek-v4.1-flash')
+    expect(document).not.toHaveProperty('quotaCheck')
+  })
+})

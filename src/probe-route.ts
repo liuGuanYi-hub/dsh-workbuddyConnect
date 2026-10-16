@@ -62,6 +62,16 @@ export interface WorkBuddyProbeRouteOptions {
    */
   setModelVisibility?: (modelId: string, visible: boolean, expectedAccount: string) => Promise<{ state: string; reason?: string }>
   /**
+   * Test every parked account against one model and report which still have
+   * quota. Optional because it exists only where the host has an account store:
+   * a host without slots has nothing to sweep, and the card renders no button.
+   *
+   * `model` is optional — omitting it means the model the plugin serves by
+   * default. It is accepted but never required from the browser, so a card
+   * cannot aim the sweep at an arbitrary model id and burn credit there.
+   */
+  checkQuota?: (model: string | undefined) => Promise<{ state: string; model?: string; reason?: string }>
+  /**
    * Route path to mount. Defaults to the CN variant's path so existing callers
    * and tests keep their behaviour; the international variant passes its own.
    */
@@ -132,6 +142,15 @@ function parseAction(text: string): WorkBuddyProbeAction | undefined {
     if (typeof wrapped['visible'] !== 'boolean') return undefined
     if (typeof account !== 'string' || account === '') return undefined
     return { action: 'set-model-visibility', model: model.trim(), visible: wrapped['visible'], account }
+  }
+  if (action === 'check-quota') {
+    // Optional, not ignorable: a `model` that is present but unusable is a
+    // malformed request, and silently falling back to the default would run a
+    // sweep the caller never asked for and spend credit against another model.
+    const model = wrapped['model']
+    if (model === undefined) return { action: 'check-quota' }
+    if (typeof model !== 'string' || model.trim() === '') return undefined
+    return { action: 'check-quota', model: model.trim() }
   }
   if (action === 'probe') {
     const model = wrapped['model']
@@ -204,6 +223,17 @@ export function workBuddyProbeHandler(
           action.visible === true,
           action.account as string,
         ))
+        return
+      }
+      if (action.action === 'check-quota') {
+        if (deps.checkQuota === undefined) {
+          json(res, 404, { error: 'quota-check-not-supported' })
+          return
+        }
+        // Held open until the sweep finishes, because this card has no polling:
+        // the response arriving *is* the signal that the results are ready, and
+        // the refresh below then reads them from the status document.
+        json(res, 200, await deps.checkQuota(action.model))
         return
       }
       json(res, 200, await deps.probe(action.model as string))

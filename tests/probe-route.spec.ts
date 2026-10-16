@@ -181,3 +181,60 @@ describe('probe control route', () => {
     expect(createProbeKey()).not.toBe(createProbeKey())
   })
 })
+
+/**
+ * `check-quota` — the action behind the card's quota button. It spends one real
+ * request per parked account, so it shares this route's key and loopback guards
+ * rather than the read-only status GET, and a model it cannot trust is refused
+ * before any request goes out.
+ */
+describe('probe control route: check-quota', () => {
+  it('runs the sweep and answers with the model it checked', async () => {
+    const asked: (string | undefined)[] = []
+    const { origin, key } = await mount({
+      checkQuota: async model => {
+        asked.push(model)
+        return { state: 'checked', model: model ?? 'deepseek-v4.1-flash' }
+      },
+    })
+    const result = await post(origin, { action: 'check-quota' }, { 'X-WorkBuddy-Probe-Key': key })
+    expect(result).toMatchObject({ status: 200, body: { state: 'checked' } })
+    expect(asked).toEqual([undefined])
+  })
+
+  it('refuses the sweep with no key, and with a wrong one', async () => {
+    const { origin } = await mount({ checkQuota: async () => ({ state: 'checked' }) })
+    expect((await post(origin, { action: 'check-quota' })).status).toBe(403)
+    expect((await post(origin, { action: 'check-quota' }, { 'X-WorkBuddy-Probe-Key': 'nope' })).status).toBe(403)
+  })
+
+  it('says so when the host cannot sweep at all', async () => {
+    // The default mount has no `checkQuota`: a host without a slot store must
+    // answer distinctly rather than pretending an empty sweep ran.
+    const { origin, key } = await mount()
+    const result = await post(origin, { action: 'check-quota' }, { 'X-WorkBuddy-Probe-Key': key })
+    expect(result).toMatchObject({ status: 404, body: { error: 'quota-check-not-supported' } })
+  })
+
+  it('passes a model the browser named straight through', async () => {
+    const asked: (string | undefined)[] = []
+    const { origin, key } = await mount({
+      checkQuota: async model => {
+        asked.push(model)
+        return { state: 'checked', model: model ?? '' }
+      },
+    })
+    await post(origin, { action: 'check-quota', model: 'glm-5.2' }, { 'X-WorkBuddy-Probe-Key': key })
+    expect(asked).toEqual(['glm-5.2'])
+  })
+
+  it('rejects a model that is present but unusable', async () => {
+    // Not a silent fallback to the default: the caller asked about one model
+    // and would get a sweep of another, spending credit it never chose.
+    const { origin, key } = await mount({ checkQuota: async () => ({ state: 'checked' }) })
+    for (const model of ['', '   ', 42]) {
+      const result = await post(origin, { action: 'check-quota', model }, { 'X-WorkBuddy-Probe-Key': key })
+      expect(result.status).toBe(400)
+    }
+  })
+})

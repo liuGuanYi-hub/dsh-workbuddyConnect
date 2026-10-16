@@ -24,6 +24,9 @@ import { FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS, WorkBuddyCatal
 import { workbuddyCatalogPath, WorkBuddyCatalogStore } from './catalog-store.ts'
 import { WorkBuddyVisibilityStore, workbuddyVisibilityPath } from './visibility-store.ts'
 import { WorkBuddyQuotaStore, workbuddyQuotaPath } from './quota-state.ts'
+import { WorkBuddyQuotaCheckService } from './quota-check-service.ts'
+import { WorkBuddyQuotaCheckStore, workbuddyQuotaCheckPath } from './quota-check-store.ts'
+import { QUOTA_CHECK_MODEL } from './quota-check.ts'
 import { createWorkBuddyAdapter } from './adapter.ts'
 import { createWorkBuddyShim } from './shim.ts'
 import { WorkBuddyProbeService } from './probe-service.ts'
@@ -36,7 +39,7 @@ import { createProbeKey, registerWorkBuddyProbeRoute } from './probe-route.ts'
 import { registerWorkBuddyAccountsRoute, workBuddyAccountsSection } from './accounts-route.ts'
 import type { WorkBuddyAccountStore } from './accounts-store.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
-import type { WorkBuddyWebCatalog, WorkBuddyWebProbeSection } from './status-paths.ts'
+import type { WorkBuddyWebCatalog, WorkBuddyWebProbeSection, WorkBuddyWebQuotaCheckSection } from './status-paths.ts'
 import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
 import { legacySettingsOf } from './legacy-settings.ts'
@@ -312,6 +315,14 @@ interface VariantRuntime {
    */
   quotaStore: WorkBuddyQuotaStore
   /**
+   * The on-demand quota sweep over every parked account.
+   *
+   * Constructed per variant because each variant bills against a different
+   * upstream: an exhaustion observed on the CN endpoint must never mark a
+   * parked international account as spent, nor the reverse.
+   */
+  quotaCheckService: WorkBuddyQuotaCheckService
+  /**
    * This variant's parked accounts, or undefined on a host without a slot
    * store (the credential store has none). Read per call, so a capture or
    * switch changes what the card lists without rebuilding the runtime.
@@ -443,6 +454,20 @@ function createVariantRuntime(
   const quotaStore = new WorkBuddyQuotaStore(
     workbuddyQuotaPath(variant.quotaFilename),
   )
+  const quotaCheckStore = new WorkBuddyQuotaCheckStore(
+    workbuddyQuotaCheckPath(variant.quotaCheckFilename),
+  )
+  const quotaCheckService = new WorkBuddyQuotaCheckService({
+    accounts: store.accountStore(),
+    quota: quotaStore,
+    checks: quotaCheckStore,
+    // Reuses the reasoning-effort probe's sender: it already builds the exact
+    // minimal request (streaming, `max_tokens: 1`, correct per-region identity
+    // headers) and stops at the first event, and it takes the credential as a
+    // parameter — which is what lets one sweep test accounts other than the
+    // one currently being served.
+    send: (credential, model, signal) => client.probeEffort(credential, model, undefined, signal),
+  })
   const probeService = new WorkBuddyProbeService({
     store: probeStore,
     catalog,
@@ -470,6 +495,7 @@ function createVariantRuntime(
     savedCatalogs,
     visibilityStore,
     quotaStore,
+    quotaCheckService,
     account: () => accountOf(variant.id),
     fallback,
     catalogSource: 'fallback',
@@ -496,6 +522,32 @@ function catalogSection(runtime: VariantRuntime): WorkBuddyWebCatalog {
     ...runtime.catalogFetchedAtMs === undefined ? {} : { fetchedAt: runtime.catalogFetchedAtMs },
     ...fetch?.appVersion === undefined ? {} : { appVersion: fetch.appVersion.version },
     ...runtime.catalogError === undefined ? {} : { error: runtime.catalogError },
+  }
+}
+
+/**
+ * The on-demand quota-check section, or undefined before any sweep has run.
+ *
+ * `undefined` rather than an empty result list on purpose: the card must be
+ * able to tell "this capability has never been exercised" from "it ran and
+ * found nothing", and an empty list would read as the latter — a clean bill
+ * of health the plugin has not actually earned.
+ */
+function quotaCheckSection(runtime: VariantRuntime): WorkBuddyWebQuotaCheckSection | undefined {
+  const last = runtime.quotaCheckService.lastOutcome()
+  if (last === undefined && !runtime.quotaCheckService.isRunning()) return undefined
+  return {
+    model: last?.model ?? QUOTA_CHECK_MODEL,
+    checkedAt: last?.checkedAt ?? 0,
+    running: runtime.quotaCheckService.isRunning(),
+    results: (last?.results ?? []).map(result => ({
+      id: result.id,
+      ...result.label === undefined ? {} : { label: result.label },
+      state: result.state,
+      status: result.status,
+      ...result.reason === undefined ? {} : { reason: result.reason },
+      checkedAt: last?.checkedAt ?? 0,
+    })),
   }
 }
 
@@ -848,6 +900,14 @@ export function apply(ctx: Context, config: Config): void {
         // recorded exhaustion verdict, so an account that has run dry is marked
         // in the list the user switches from.
         accounts: () => workBuddyAccountsSection(runtime.accountStore, captureAvailability, runtime.quotaStore),
+        // The sweep's capability signal and its results. Advertised only where
+        // there is a slot store to sweep: a host without parked accounts has
+        // nothing for the button to act on, so it omits the field and the card
+        // renders no button rather than one that can only answer "no accounts".
+        ...runtime.accountStore === undefined ? {} : { quotaCheckModel: QUOTA_CHECK_MODEL },
+        // Results of the last on-demand sweep, so a reload keeps showing what
+        // the user paid a request to learn. Absent until one has run.
+        quotaCheck: () => quotaCheckSection(runtime),
         ...runtime.variant.id === CN_VARIANT.id ? {} : {
           // Presence of this field in the document is the card's capability
           // signal, so the getter answers `undefined` — not merely `false` —
@@ -928,6 +988,19 @@ export function apply(ctx: Context, config: Config): void {
           }
           runtime.invalidate()
           return { state: 'updated' }
+        },
+        checkQuota: async model => {
+          // The probe route's own rule, applied here: a model id the live
+          // catalog does not list would be refused by the upstream in a way that
+          // says nothing about quota — and unlike a probe, that mistake costs
+          // one wasted request per parked account, not one. The default target
+          // is never gated on the catalog, so the card's button works even
+          // before a catalog has been fetched.
+          if (model !== undefined && runtime.catalog.current().find(info => info.id === model) === undefined) {
+            return { state: 'failed', reason: `unknown model: ${model}` }
+          }
+          const outcome = await runtime.quotaCheckService.checkAll(model ?? QUOTA_CHECK_MODEL)
+          return { state: 'checked', model: outcome.model }
         },
       }, probeKey)
       // The switching write route. Guarded by the same in-process key as probe

@@ -127,6 +127,40 @@ export interface WorkBuddyWebProbeSection {
   results: readonly WorkBuddyWebProbeModel[]
 }
 
+/** One account's on-demand quota-check result, as the card renders it. */
+export interface WorkBuddyWebQuotaCheck {
+  /** Slot id this result belongs to. */
+  id: string
+  /** The account's display name at check time, for a stable row label. */
+  label?: string
+  /** Whether the upstream accepted a request for this account. */
+  state: 'available' | 'exhausted' | 'unknown'
+  /** HTTP status observed; 0 for a transport failure. */
+  status: number
+  /** Why the state is `unknown`; absent otherwise. */
+  reason?: string
+  /** When this check ran, epoch milliseconds. */
+  checkedAt: number
+}
+
+/**
+ * The quota-check section of the status document.
+ *
+ * Present only once a check has run in this process, so the card can tell
+ * "never checked" from "checked and found nothing" — the same distinction the
+ * account rows make for a recorded refusal, and for the same reason: a
+ * capability that has not been exercised must not read as a clean bill.
+ */
+export interface WorkBuddyWebQuotaCheckSection {
+  /** The model every result describes. */
+  model: string
+  /** When the most recent sweep finished, epoch milliseconds. */
+  checkedAt: number
+  /** Whether a sweep is running right now, so the card can disable its button. */
+  running: boolean
+  results: readonly WorkBuddyWebQuotaCheck[]
+}
+
 /** Action requested from the probe control route. */
 export interface WorkBuddyProbeAction {
   /**
@@ -134,13 +168,21 @@ export interface WorkBuddyProbeAction {
    * `refresh` re-reads the credential and re-fetches the model catalog;
    * `set-maximum-context-window` persists the international card preference;
    * `set-model-visibility` hides or shows one model for the signed-in
-   * account's picker.
+   * account's picker; `check-quota` tests every parked account against one
+   * model and reports which still have quota left.
    *
-   * All five are writes, which is why they share this route's in-process key
-   * and loopback guards rather than the read-only status GET.
+   * All six are writes, which is why they share this route's in-process key
+   * and loopback guards rather than the read-only status GET. `check-quota`
+   * earns its place here for the same reason as `probe`: it spends a real
+   * (if minimal) upstream request per parked account.
    */
-  action: 'probe' | 'clear' | 'refresh' | 'set-maximum-context-window' | 'set-model-visibility'
-  /** Target model id; required for `probe` and `set-model-visibility`. */
+  action: 'probe' | 'clear' | 'refresh' | 'set-maximum-context-window' | 'set-model-visibility' | 'check-quota'
+  /**
+   * Target model id; required for `probe` and `set-model-visibility`.
+   *
+   * For `check-quota` it is optional: omitted means the model the plugin
+   * serves by default (see `QUOTA_CHECK_MODEL`), which is what the card sends.
+   */
   model?: string
   /** Requested value for `set-maximum-context-window` and `set-model-visibility`. */
   enabled?: boolean
@@ -369,6 +411,19 @@ export type WorkBuddyWebStatus =
      * account store, which is the card's signal to render no switcher at all.
      */
     accounts?: WorkBuddyWebAccountsSection
+    /**
+     * The model a `check-quota` sweep targets when the card names none.
+     *
+     * Presence of this field is the card's capability signal for the quota
+     * button: a host that cannot run a sweep omits it and the card renders no
+     * button at all, rather than one whose click can only be refused.
+     */
+    quotaCheckModel?: string
+    /**
+     * Results of the last on-demand quota check, when one has run. Absent until
+     * then, which is the card's signal to render no result rows at all.
+     */
+    quotaCheck?: WorkBuddyWebQuotaCheckSection
     /**
      * In-process key authorizing probe control writes. Handed to the card with
      * the status document (the card is same-origin and already had to pass the
