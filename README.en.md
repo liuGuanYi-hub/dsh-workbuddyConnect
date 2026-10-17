@@ -13,7 +13,7 @@ Brings the models available in your signed-in WorkBuddy / WorkBuddy AI desktop a
 ```text
 Please install and verify the DSH (DeepSeek Harness) plugin dsh-workbuddy-connect for me (project: https://github.com/corrinehu/dsh-workbuddy-connect).
 Start by reading the project README and confirming which interface I actually use (Web / Desktop / TUI) and its DSH core version — for the Desktop app, the bundled core, never the standalone CLI's version.
-Then install from the official npm package per the version mapping (0.2.0-rc.2 -> 0.7.6, rc.1 -> 0.7.0, 0.1.5-0.1.7 -> 0.6.5), preferring a locally supported non-market channel; on some Desktop distributions (the official Electron app in particular) the profile is app-managed and rules vary by distribution — check mine first, then explore its compliant install route, but never bypass its validation.
+Then pick the plugin version per the mapping (0.2.1-rc.1 -> 0.7.7-fork.1, 0.2.0-rc.2 -> 0.7.6, rc.1 -> 0.7.0, 0.1.5-0.1.7 -> 0.6.5), preferring a locally supported non-market channel; on the 0.2.1-rc.1 core only this fork's build works, and it comes from a local tarball rather than npm; on some Desktop distributions (the official Electron app in particular) the profile is app-managed and rules vary by distribution — check mine first, then explore its compliant install route, but never bypass its validation.
 Ask for my consent and make backups before changing any local files or configuration.
 After installing, verify the WorkBuddy group appears in the model picker and walk me through one short conversation.
 If the Desktop install still fails generation validation (e.g. the @types/retry false positive), report it honestly, reference upstream dataelement/dsh-desktop#688, and suggest switching to the standalone Web / TUI — do not modify dependency packages or bypass the check.
@@ -23,6 +23,7 @@ Core-to-plugin quick reference (full table in "Compatibility and release history
 
 | DSH core | Recommended plugin |
 |---|---|
+| 0.2.1-rc.1 | **0.7.7-fork.1** (this fork's local build — see "Compatibility and release history") |
 | 0.2.0-rc.2 | 0.7.6 (npm latest) |
 | 0.2.0-rc.1 | 0.7.0 |
 | 0.1.5 – 0.1.7 | 0.6.5 |
@@ -132,7 +133,8 @@ The plugin version must match the DSH core — a mismatched combination fails to
 
 | DSH core | Recommended plugin | Notes |
 |---|---|---|
-| `0.2.0-rc.2` | `0.7.6` (npm latest) | Current line; fixes enterprise catalog gaps and international chat requests blocked by the upstream channel check. Avoid 0.7.2 with its registry regression. |
+| `0.2.1-rc.1` | `0.7.7-fork.1` (this fork) | This repository's fork build: every upstream 0.7.6 feature plus multi-account switching, in-card rename, and quota checks, rebuilt against the DSH 0.2.1-rc.1 generation (`@deepseek-ai/dsh-*` 0.2.1-rc.1, `@earendil-works/pi-ai` 1.3.0). Upstream has not published a matching release, so a 0.2.1 core must use this build or the plugin panel reports it as incompatible. |
+| `0.2.0-rc.2` | `0.7.6` (npm latest) | Fixes enterprise catalog gaps and international chat requests blocked by the upstream channel check. Avoid 0.7.2 with its registry regression. |
 | `0.2.0-rc.1` | `0.7.0` | 0.7.1 drops rc.1 support; stay on this version. |
 | `0.1.5` – `0.1.7` | `0.6.5` | Final release for the old cores; 0.7.0 targets 0.2.0 only. |
 | `0.1.2-rc.1` | `0.3.1` | Older line, historical maintenance only. |
@@ -140,6 +142,7 @@ The plugin version must match the DSH core — a mismatched combination fails to
 
 Release history (full records at [releases](https://github.com/corrinehu/dsh-workbuddy-connect/releases)):
 
+- **0.7.7-fork.1** (this fork): adapts to DSH 0.2.1-rc.1. DSH 0.2.1 moved `@deepseek-ai/dsh-*` to 0.2.1-rc.1 and `@earendil-works/pi-ai` to 1.x, while upstream 0.7.6 still pins peers to 0.2.0-rc.2, so the plugin panel flags it as incompatible. This build moves the seven DSH service peers to `^0.2.1-rc.1`, pins pi-ai at 1.3.0, and was rebuilt after a clean typecheck and 988 tests; the fork features are unchanged.
 - **0.7.6**: fixes enterprise accounts missing `glm-5.3-flashx` from the model catalog ([#123](https://github.com/corrinehu/dsh-workbuddy-connect/issues/123)), and fixes international chat requests being blocked by the upstream channel check ([#139](https://github.com/corrinehu/dsh-workbuddy-connect/issues/139) / [#142](https://github.com/corrinehu/dsh-workbuddy-connect/issues/142)).
 - **0.7.5**: restores composer controls after session switching ([#125](https://github.com/corrinehu/dsh-workbuddy-connect/issues/125) / [#132](https://github.com/corrinehu/dsh-workbuddy-connect/issues/132)), fixes WSL helper environment forwarding ([#133](https://github.com/corrinehu/dsh-workbuddy-connect/issues/133)), and adds community projects to both READMEs.
 - **0.7.4**: Windows diagnostics and stability improvements: accurate classification of oversized registry-subprocess output, cross-platform test-assumption fixes ([#62](https://github.com/corrinehu/dsh-workbuddy-connect/issues/62)), and a reworked install section.
@@ -151,7 +154,7 @@ Release history (full records at [releases](https://github.com/corrinehu/dsh-wor
 
 Pinned-version install example: `dsh plugin --profile web add dsh-workbuddy-connect@0.7.6`.
 
-**Do not upgrade the profile-level `@earendil-works/pi-ai` to 1.x**: this plugin and the `0.2.0-rc.2` generation of the DSH core both require `^0.87.1` (bundled by the plugin since 0.7.2), and third-party plugin managers' "updatable" prompts do not check peer constraints — do not act on them ([#86](https://github.com/corrinehu/dsh-workbuddy-connect/issues/86)); likewise, do not blindly remove a leftover `overrides: {'@earendil-works/pi-ai': '0.87.1'}` until you have confirmed nothing else depends on it.
+**The `@earendil-works/pi-ai` version follows the core — do not edit it by hand**: the 0.2.0-rc.2 generation requires `^0.87.1`, while the 0.2.1-rc.1 generation requires 1.x (this fork pins `1.3.0`; the plugin bundles its own copy since 0.7.2). Third-party plugin managers' "updatable" prompts do not check peer constraints — do not act on them ([#86](https://github.com/corrinehu/dsh-workbuddy-connect/issues/86)); a leftover `overrides: {'@earendil-works/pi-ai': '0.87.1'}` actively makes a 0.2.1 core load the wrong generation, so clear it when upgrading the core.
 
 ## Disclaimer
 
