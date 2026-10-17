@@ -1,6 +1,6 @@
 /**
  * Confirm the pi-ai copy this plugin actually loaded is the generation the DSH
- * 0.2.0-rc.2 host was built against.
+ * 0.2.1-rc.1 host was built against.
  *
  * #92's failure mode: a pnpm profile with `nodeLinker: hoisted` and
  * `autoInstallPeers: false` installs no peer for us, so a co-installed
@@ -24,7 +24,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 /** The pi-ai generation this plugin is built and tested against. */
-export const REQUIRED_PI_AI_VERSION = '0.87.1'
+export const REQUIRED_PI_AI_VERSION = '1.3.0'
 
 /**
  * Read the version of the pi-ai copy Node resolves for *this* module.
