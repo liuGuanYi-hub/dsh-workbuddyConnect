@@ -161,6 +161,46 @@ export interface WorkBuddyWebQuotaCheckSection {
   results: readonly WorkBuddyWebQuotaCheck[]
 }
 
+/** One account's daily check-in result, as the card renders it. */
+export interface WorkBuddyWebCheckinRow {
+  /** Slot id this row belongs to. */
+  id: string
+  /** The account's display name at check time, for a stable row label. */
+  label?: string
+  /**
+   * What the status read said:
+   * `unavailable` (no activity for this account), `claimable` (still available
+   * when the sweep started), `checked-in` (today's reward is taken), or
+   * `unknown` (the upstream could not be asked).
+   */
+  status: 'unavailable' | 'claimable' | 'checked-in' | 'unknown'
+  /** What the sweep did: claimed the reward, skipped it, or failed to. */
+  outcome: 'claimed' | 'skipped' | 'failed'
+  /** Credits granted by this claim, when the upstream named a number. */
+  credit?: number
+  /** What today's reward is worth, when the status named a number. */
+  dailyCredit?: number
+  /** Consecutive check-in days, when the upstream counted them. */
+  streakDays?: number
+  /** Why nothing was claimed, or why the claim failed. */
+  reason?: string
+}
+
+/**
+ * The daily check-in section of the status document.
+ *
+ * Presence in the document is the card's capability signal: a host without a
+ * slot store omits it and renders no sign-in control. Present but with no rows
+ * means a sweep has run and there was nothing to report.
+ */
+export interface WorkBuddyWebCheckinSection {
+  /** When the most recent sweep finished, epoch milliseconds; 0 if never. */
+  checkedAt: number
+  /** Whether a sweep is running right now, so the card can disable its button. */
+  running: boolean
+  rows: readonly WorkBuddyWebCheckinRow[]
+}
+
 /** Action requested from the probe control route. */
 export interface WorkBuddyProbeAction {
   /**
@@ -169,14 +209,17 @@ export interface WorkBuddyProbeAction {
    * `set-maximum-context-window` persists the international card preference;
    * `set-model-visibility` hides or shows one model for the signed-in
    * account's picker; `check-quota` tests every parked account against one
-   * model and reports which still have quota left.
+   * model and reports which still have quota left; `checkin` reads every
+   * parked account's daily check-in state and claims whatever reward is still
+   * unclaimed.
    *
-   * All six are writes, which is why they share this route's in-process key
+   * All seven are writes, which is why they share this route's in-process key
    * and loopback guards rather than the read-only status GET. `check-quota`
-   * earns its place here for the same reason as `probe`: it spends a real
-   * (if minimal) upstream request per parked account.
+   * and `checkin` earn their place here for the same reason as `probe`: each
+   * spends a real upstream request per parked account, and `checkin` also
+   * performs a state-changing claim.
    */
-  action: 'probe' | 'clear' | 'refresh' | 'set-maximum-context-window' | 'set-model-visibility' | 'check-quota'
+  action: 'probe' | 'clear' | 'refresh' | 'set-maximum-context-window' | 'set-model-visibility' | 'check-quota' | 'checkin'
   /**
    * Target model id; required for `probe` and `set-model-visibility`.
    *
@@ -424,6 +467,15 @@ export type WorkBuddyWebStatus =
      * then, which is the card's signal to render no result rows at all.
      */
     quotaCheck?: WorkBuddyWebQuotaCheckSection
+    /**
+     * The daily check-in sweep.
+     *
+     * Presence is the card's capability signal for the check-in control; the
+     * section itself appears only once a sweep has run, so its own presence
+     * answers "has anyone pressed this yet" separately from "can this host do
+     * it at all".
+     */
+    checkin?: WorkBuddyWebCheckinSection
     /**
      * In-process key authorizing probe control writes. Handed to the card with
      * the status document (the card is same-origin and already had to pass the

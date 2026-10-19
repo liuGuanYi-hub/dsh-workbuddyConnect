@@ -15,7 +15,7 @@ import { normalizeCredits } from './upstream.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
 import { WORKBUDDY_STATUS_PATH } from './status-paths.ts'
-import type { WorkBuddyWebCatalog, WorkBuddyWebModelBadge, WorkBuddyWebAccountsSection, WorkBuddyWebProbeSection, WorkBuddyWebQuotaCheckSection, WorkBuddyWebStatus, WorkBuddyWebVisibilitySection } from './status-paths.ts'
+import type { WorkBuddyWebCatalog, WorkBuddyWebModelBadge, WorkBuddyWebAccountsSection, WorkBuddyWebCheckinSection, WorkBuddyWebProbeSection, WorkBuddyWebQuotaCheckSection, WorkBuddyWebStatus, WorkBuddyWebVisibilitySection } from './status-paths.ts'
 
 export { WORKBUDDY_STATUS_PATH } from './status-paths.ts'
 export type { WorkBuddyWebStatus } from './status-paths.ts'
@@ -74,6 +74,12 @@ export interface WorkBuddyStatusRouteOptions {
    * nothing.
    */
   quotaCheck?: () => WorkBuddyWebQuotaCheckSection | undefined
+  /**
+   * The daily check-in capability and its last sweep. Absent when the host has
+   * no parked accounts to sweep; presence is the card's signal to render the
+   * button, and the getter answers `undefined` until a sweep has run.
+   */
+  checkin?: () => WorkBuddyWebCheckinSection | undefined
   /**
    * Route path to mount. Defaults to the CN variant's path so existing callers
    * and tests keep their behaviour; the international variant passes its own.
@@ -225,10 +231,14 @@ export async function workBuddyWebStatus(
   // capability signal travels with it: a document with no `quotaCheckModel` is
   // one whose host cannot run a sweep, and the card renders no button for it.
   const quotaCheck = deps.quotaCheck?.()
+  // The check-in sweep rides beside the account rows for the same reason: it is
+  // about those parked accounts, and its rows are keyed by the same slot ids.
+  const checkin = deps.checkin?.()
   const withQuotaCheck: WorkBuddyWebStatus = {
     ...withAccounts,
     ...deps.quotaCheckModel === undefined ? {} : { quotaCheckModel: deps.quotaCheckModel },
     ...quotaCheck === undefined ? {} : { quotaCheck },
+    ...checkin === undefined ? {} : { checkin },
   }
   try {
     const credential = await deps.store.current()

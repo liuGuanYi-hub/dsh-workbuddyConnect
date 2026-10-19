@@ -72,6 +72,16 @@ export interface WorkBuddyProbeRouteOptions {
    */
   checkQuota?: (model: string | undefined) => Promise<{ state: string; model?: string; reason?: string }>
   /**
+   * Read every parked account's daily check-in state and claim whatever reward
+   * is still unclaimed. Optional because it exists only where the host has an
+   * account store.
+   *
+   * It takes no argument on purpose: the sweep is defined over the parked
+   * slots, and the only thing a browser could vary — which accounts to claim
+   * for — is exactly what must not be caller-controlled.
+   */
+  checkin?: () => Promise<{ state: string; reason?: string }>
+  /**
    * Route path to mount. Defaults to the CN variant's path so existing callers
    * and tests keep their behaviour; the international variant passes its own.
    */
@@ -152,6 +162,9 @@ function parseAction(text: string): WorkBuddyProbeAction | undefined {
     if (typeof model !== 'string' || model.trim() === '') return undefined
     return { action: 'check-quota', model: model.trim() }
   }
+  // No payload at all: which accounts to claim for follows from the parked
+  // slots, and a caller-supplied subset is exactly what must not be honoured.
+  if (action === 'checkin') return { action: 'checkin' }
   if (action === 'probe') {
     const model = wrapped['model']
     if (typeof model !== 'string' || model.trim() === '') return undefined
@@ -234,6 +247,15 @@ export function workBuddyProbeHandler(
         // the response arriving *is* the signal that the results are ready, and
         // the refresh below then reads them from the status document.
         json(res, 200, await deps.checkQuota(action.model))
+        return
+      }
+      if (action.action === 'checkin') {
+        if (deps.checkin === undefined) {
+          json(res, 404, { error: 'checkin-not-supported' })
+          return
+        }
+        // Same shape as the quota sweep: the response is the completion signal.
+        json(res, 200, await deps.checkin())
         return
       }
       json(res, 200, await deps.probe(action.model as string))

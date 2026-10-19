@@ -10,7 +10,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { WORKBUDDY_ACCOUNTS_PATH, WORKBUDDY_AI_ACCOUNTS_PATH, WORKBUDDY_AI_PROBE_PATH, WORKBUDDY_AI_STATUS_PATH, WORKBUDDY_PROBE_PATH, WORKBUDDY_STATUS_PATH, isWorkBuddySignedOutReasonCode } from '../status-paths.ts'
 import type { WorkBuddyAccountsAction, WorkBuddyWebAccount, WorkBuddyWebAccountsSection, WorkBuddyWebCreditExpiry } from '../status-paths.ts'
-import type { WorkBuddySignedOutReasonCode, WorkBuddyWebModelBadge, WorkBuddyWebProbeSection, WorkBuddyWebQuotaCheck, WorkBuddyWebQuotaCheckSection, WorkBuddyWebStatus, WorkBuddyWebVisibilitySection } from '../status-paths.ts'
+import type { WorkBuddySignedOutReasonCode, WorkBuddyWebCheckinRow, WorkBuddyWebCheckinSection, WorkBuddyWebModelBadge, WorkBuddyWebProbeSection, WorkBuddyWebQuotaCheck, WorkBuddyWebQuotaCheckSection, WorkBuddyWebStatus, WorkBuddyWebVisibilitySection } from '../status-paths.ts'
 import { isWorkBuddyWebStatus } from './status-document.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
 
@@ -993,7 +993,7 @@ function ProbeSection({ probe, models, t, onDetect, onClear, busy }: {
  * Rendered only when the status document carries an account section, so a host
  * without an account store shows no controls rather than dead ones.
  */
-function AccountSection({ section, busyId, onCapture, onUse, onRename, onRemove, t }: {
+function AccountSection({ section, busyId, onCapture, onUse, onRename, onRemove, checkin, busy, onCheckin, t }: {
   section: WorkBuddyWebAccountsSection
   /** The account id (or `capture`) with a write in flight, if any. */
   busyId: string | undefined
@@ -1002,6 +1002,15 @@ function AccountSection({ section, busyId, onCapture, onUse, onRename, onRemove,
   /** Resolves true when the host accepted the new name. */
   onRename: (id: string, label: string) => Promise<boolean>
   onRemove: (id: string) => void
+  /**
+   * The daily check-in control, or `undefined` on a host that cannot run it.
+   * Rendered inside this section rather than beside it: it is about these
+   * parked accounts, and a separate block would repeat their names.
+   */
+  checkin: { section: WorkBuddyWebCheckinSection | undefined } | undefined
+  /** True while any card-wide request is in flight. */
+  busy: boolean
+  onCheckin: () => void
   t: WorkBuddyPluginCardInjected['t']
 }): React.ReactNode {
   const anyBusy = busyId !== undefined
@@ -1188,6 +1197,24 @@ function AccountSection({ section, busyId, onCapture, onUse, onRename, onRemove,
             ))}
           </ul>
           )}
+      {/*
+        * Check-in sits inside the account block, directly under the parked
+        * accounts: they are the ones the desktop app is *not* signed into, so
+        * this is where their daily reward would otherwise be forgotten. Above
+        * the capture button, so a user on this page sees what can be collected
+        * before being offered more accounts to manage.
+        */}
+      {checkin === undefined
+        ? null
+        : (
+          <CheckinSection
+            section={checkin.section}
+            accounts={section.accounts}
+            busy={busy || anyBusy}
+            onCheckin={onCheckin}
+            t={t}
+          />
+          )}
       <div style={accountActionsStyle}>
         <button
           type="button"
@@ -1330,6 +1357,157 @@ function QuotaCheckSection({ section, defaultModel, accounts, models, t, onCheck
             onClick={() => { setConfirming(true) }}
           >
             {isRunning ? t('quotaCheckChecking') : t('quotaCheckStart')}
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Daily check-in over every parked account.
+ *
+ * The parked accounts are exactly the ones the desktop app is *not* signed into,
+ * so their daily reward would lapse silently. This section is the one control
+ * that keeps them current: one press reads every account's state and claims
+ * whatever is still unclaimed.
+ *
+ * Deliberately *no* separate heading: it sits inside the account section, where
+ * the rows it describes already live. Its result line goes directly above the
+ * button so the user reads "what happened" and "press again" in one glance.
+ *
+ * Confirmed before it runs, like the quota sweep: a press spends one request per
+ * parked account and changes upstream state, and the wording has to say that it
+ * claims automatically rather than merely reporting.
+ */
+function CheckinSection({ section, accounts, busy, onCheckin, t }: {
+  /** The last sweep, or undefined when none has run in this process. */
+  section: WorkBuddyWebCheckinSection | undefined
+  /** The parked accounts, for row names and the count the confirm asks about. */
+  accounts: readonly WorkBuddyWebAccount[]
+  busy: boolean
+  onCheckin: () => void
+  t: WorkBuddyPluginCardInjected['t']
+}): React.ReactNode {
+  const [confirming, setConfirming] = useState(false)
+  // `busy` is card-wide, so the button's own label needs the same armed/released
+  // discipline the quota sweep uses: without it a click that batched with an
+  // unrelated refresh would drop "checking in…" before anything was sent.
+  const [running, setRunning] = useState(false)
+  const armed = useRef(false)
+  const isRunning = section?.running === true || running
+  useEffect(() => {
+    if (!running) return
+    if (section?.running === true) {
+      armed.current = true
+      return
+    }
+    if (!armed.current) return
+    armed.current = false
+    setRunning(false)
+  }, [running, section?.running])
+  const nameOf = (row: WorkBuddyWebCheckinRow): string => {
+    const account = accounts.find(candidate => candidate.id === row.id)
+    // The live row's name first, for the same reason the quota rows use it: a
+    // sweep taken before a rename would otherwise keep the old name.
+    return account?.label ?? account?.nickname ?? row.label ?? row.id
+  }
+  /** What one row says: a short chip for the state the sweep reached. */
+  const chipOf = (row: WorkBuddyWebCheckinRow): { key: 'checkinClaimed' | 'checkinClaimedUnknown' | 'checkinToday' | 'checkinNoActivity' | 'checkinUnknown' | 'checkinFailed'; credit?: number } => {
+    if (row.outcome === 'claimed') {
+      return row.credit === undefined
+        ? { key: 'checkinClaimedUnknown' }
+        : { key: 'checkinClaimed', credit: row.credit }
+    }
+    if (row.outcome === 'failed') return { key: 'checkinFailed' }
+    // A skipped row's own status is the honest label; `claimable` never ends a
+    // sweep as `skipped`, so it cannot be rendered from here.
+    if (row.status === 'checked-in') return { key: 'checkinToday' }
+    if (row.status === 'unavailable') return { key: 'checkinNoActivity' }
+    return { key: 'checkinUnknown' }
+  }
+  // Credit granted by this sweep, so the summary line can say what it earned
+  // rather than only how many accounts did something.
+  const claimedRows = (section?.rows ?? []).filter(row => row.outcome === 'claimed')
+  const credited = claimedRows.reduce((sum, row) => sum + (row.credit ?? 0), 0)
+  return (
+    <div style={quotaGroupStyle}>
+      <div style={quotaLabelStyle}>
+        <span>{t('checkinHeading')}</span>
+      </div>
+      <p style={bodyStyle}>{t('checkinIntro')}</p>
+      {section === undefined ? null : (
+        <div style={quotaGroupStyle}>
+          {section.rows.map(row => {
+            const chip = chipOf(row)
+            return (
+              <div key={row.id} style={modelOfferStyle}>
+                <div style={probeRowStyle}>
+                  <span>{nameOf(row)}</span>
+                  <span style={probeRowEndStyle}>
+                    <span style={modelBadgeChipStyle}>
+                      {chip.credit === undefined
+                        ? t(chip.key)
+                        : t(chip.key, { credit: formatNumber(chip.credit) })}
+                    </span>
+                  </span>
+                </div>
+                {/* The upstream's own words ride under the row for the one case
+                    where the chip is not enough: a failure the user may need to
+                    act on (a dead session) rather than a normal no-op. */}
+                {row.outcome === 'failed' && row.reason !== undefined
+                  ? <span style={modelRateStyle}>{row.reason}</span>
+                  : null}
+              </div>
+            )
+          })}
+          <span style={modelRateStyle}>
+            {section.checkedAt === 0
+              ? null
+              : t('checkinAt', { time: formatTime(section.checkedAt) })}
+            {section.checkedAt === 0 ? null : ' · '}
+            {t('checkinResult', {
+              claimed: String(claimedRows.length),
+              credits: formatNumber(credited),
+              skipped: String(section.rows.filter(row => row.outcome === 'skipped').length),
+              failed: String(section.rows.filter(row => row.outcome === 'failed').length),
+            })}
+          </span>
+        </div>
+      )}
+      {section === undefined || section.rows.length > 0 || accounts.length > 0 ? null : (
+        <p style={bodyStyle}>{t('quotaCheckEmpty')}</p>
+      )}
+      {confirming ? (
+        <div style={confirmBoxStyle}>
+          <p style={bodyStyle}>{t('checkinConfirm', { count: accounts.length })}</p>
+          <div style={confirmRowStyle}>
+            <button type="button" style={buttonStyle} onClick={() => { setConfirming(false) }}>
+              {t('cancel')}
+            </button>
+            <button
+              type="button"
+              style={primaryButtonStyle}
+              disabled={isRunning}
+              onClick={() => {
+                setConfirming(false)
+                setRunning(true)
+                onCheckin()
+              }}
+            >
+              {t('checkinConfirmAction')}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div style={accountActionsStyle}>
+          <button
+            type="button"
+            style={buttonStyle}
+            disabled={isRunning || busy || accounts.length === 0}
+            onClick={() => { setConfirming(true) }}
+          >
+            {isRunning ? t('checkinChecking') : t('checkinStart')}
           </button>
         </div>
       )}
@@ -1548,7 +1726,7 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
    * the host never accepts a prompt, a sentinel, or a model outside its own
    * catalog from here.
    */
-  const control = useCallback(async (action: { action: 'probe'; model: string } | { action: 'clear' } | { action: 'set-maximum-context-window'; enabled: boolean } | { action: 'set-model-visibility'; model: string; visible: boolean; account: string } | { action: 'check-quota' }): Promise<void> => {
+  const control = useCallback(async (action: { action: 'probe'; model: string } | { action: 'clear' } | { action: 'set-maximum-context-window'; enabled: boolean } | { action: 'set-model-visibility'; model: string; visible: boolean; account: string } | { action: 'check-quota' } | { action: 'checkin' }): Promise<void> => {
     const key = status?.status === 'signed-in' ? status.probeKey : undefined
     if (key === undefined) return
     // A visibility toggle runs on its own per-row in-flight set so the
@@ -1604,6 +1782,15 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
           ? String((value as Record<string, unknown>)['reason'])
           : t('requestFailed')
         throw new Error(message)
+      }
+      // Same rule for the check-in sweep: a sweep the host did not run must not
+      // leave the previous rows on screen as if the click had produced them.
+      if (action.action === 'checkin'
+        && (typeof value !== 'object' || value === null || (value as Record<string, unknown>)['state'] !== 'checked')) {
+        const reason = typeof value === 'object' && value !== null && 'reason' in value
+          ? String((value as Record<string, unknown>)['reason'])
+          : t('requestFailed')
+        throw new Error(t('checkinError', { message: reason }))
       }
       await refresh(controller.signal)
     } catch (error: unknown) {
@@ -1896,6 +2083,14 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
                             onUse={useAccount}
                             onRename={renameAccount}
                             onRemove={removeAccount}
+                            // Presence of `status.checkin` is the host's
+                            // capability signal; an older host omits it and the
+                            // block renders no check-in control at all.
+                            checkin={status.checkin === undefined ? undefined : {
+                              section: status.checkin,
+                            }}
+                            busy={busy}
+                            onCheckin={() => { void control({ action: 'checkin' }) }}
                             t={t}
                           />
                           {/*

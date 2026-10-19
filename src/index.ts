@@ -26,6 +26,7 @@ import { WorkBuddyVisibilityStore, workbuddyVisibilityPath } from './visibility-
 import { WorkBuddyQuotaStore, workbuddyQuotaPath } from './quota-state.ts'
 import { WorkBuddyQuotaCheckService } from './quota-check-service.ts'
 import { WorkBuddyQuotaCheckStore, workbuddyQuotaCheckPath } from './quota-check-store.ts'
+import { WorkBuddyCheckinService } from './checkin-service.ts'
 import { QUOTA_CHECK_MODEL } from './quota-check.ts'
 import { createWorkBuddyAdapter } from './adapter.ts'
 import { createWorkBuddyShim } from './shim.ts'
@@ -39,7 +40,7 @@ import { createProbeKey, registerWorkBuddyProbeRoute } from './probe-route.ts'
 import { registerWorkBuddyAccountsRoute, workBuddyAccountsSection } from './accounts-route.ts'
 import type { WorkBuddyAccountStore } from './accounts-store.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
-import type { WorkBuddyWebCatalog, WorkBuddyWebProbeSection, WorkBuddyWebQuotaCheckSection } from './status-paths.ts'
+import type { WorkBuddyWebCatalog, WorkBuddyWebCheckinSection, WorkBuddyWebProbeSection, WorkBuddyWebQuotaCheckSection } from './status-paths.ts'
 import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
 import { legacySettingsOf } from './legacy-settings.ts'
@@ -323,6 +324,16 @@ interface VariantRuntime {
    */
   quotaCheckService: WorkBuddyQuotaCheckService
   /**
+   * The daily check-in sweep over every parked account.
+   *
+   * Per variant because the two endpoints answer different status documents
+   * (CN `checkin-status` vs international `checkin-activity-status`) and run
+   * separate reward activities: a CN claim says nothing about an international
+   * account's day. Undefined on a host without a slot store, which is the
+   * capability signal the card keys its controls on.
+   */
+  checkinService: WorkBuddyCheckinService | undefined
+  /**
    * This variant's parked accounts, or undefined on a host without a slot
    * store (the credential store has none). Read per call, so a capture or
    * switch changes what the card lists without rebuilding the runtime.
@@ -482,6 +493,18 @@ function createVariantRuntime(
     // another's, and an in-flight sweep cannot store under a new account.
     account: () => identityOf(variant.id),
   })
+  // Daily check-in over the same parked slots. Undefined on a host without a
+  // slot store: with no parked account there is nothing a sweep could pay for,
+  // and the status document omits the section so the card renders no control.
+  const accountStore = store.accountStore()
+  const checkinService = accountStore === undefined
+    ? undefined
+    : new WorkBuddyCheckinService({
+        accounts: accountStore,
+        // Each variant's reward activity lives on its own endpoint, so the
+        // service is bound to the region its credentials belong to.
+        region: variant.id === CN_VARIANT.id ? 'cn' : 'global',
+      })
   return {
     variant,
     store,
@@ -496,6 +519,7 @@ function createVariantRuntime(
     visibilityStore,
     quotaStore,
     quotaCheckService,
+    checkinService,
     account: () => accountOf(variant.id),
     fallback,
     catalogSource: 'fallback',
@@ -547,6 +571,35 @@ function quotaCheckSection(runtime: VariantRuntime): WorkBuddyWebQuotaCheckSecti
       status: result.status,
       ...result.reason === undefined ? {} : { reason: result.reason },
       checkedAt: last?.checkedAt ?? 0,
+    })),
+  }
+}
+
+/**
+ * The daily check-in section, or undefined before any sweep has run.
+ *
+ * Same rule as the quota section: `undefined` means "never exercised", which is
+ * a different statement from "ran and found nothing to claim", and the card
+ * must be able to tell them apart before it offers a control that spends a
+ * request per parked account.
+ */
+function checkinSection(runtime: VariantRuntime): WorkBuddyWebCheckinSection | undefined {
+  const service = runtime.checkinService
+  if (service === undefined) return undefined
+  const last = service.lastOutcome()
+  if (last === undefined && !service.isRunning()) return undefined
+  return {
+    checkedAt: last?.checkedAtMs ?? 0,
+    running: service.isRunning(),
+    rows: (last?.rows ?? []).map(row => ({
+      id: row.id,
+      ...row.label === undefined ? {} : { label: row.label },
+      status: row.status,
+      outcome: row.outcome,
+      ...row.credit === undefined ? {} : { credit: row.credit },
+      ...row.dailyCredit === undefined ? {} : { dailyCredit: row.dailyCredit },
+      ...row.streakDays === undefined ? {} : { streakDays: row.streakDays },
+      ...row.reason === undefined ? {} : { reason: row.reason },
     })),
   }
 }
@@ -908,6 +961,11 @@ export function apply(ctx: Context, config: Config): void {
         // Results of the last on-demand sweep, so a reload keeps showing what
         // the user paid a request to learn. Absent until one has run.
         quotaCheck: () => quotaCheckSection(runtime),
+        // Daily check-in: presence of the getter is the card's capability
+        // signal. It is present only where a sweep could actually run, so a
+        // card on a slotless host renders no button rather than one that can
+        // only answer "not supported".
+        ...runtime.checkinService === undefined ? {} : { checkin: () => checkinSection(runtime) },
         ...runtime.variant.id === CN_VARIANT.id ? {} : {
           // Presence of this field in the document is the card's capability
           // signal, so the getter answers `undefined` — not merely `false` —
@@ -1001,6 +1059,21 @@ export function apply(ctx: Context, config: Config): void {
           }
           const outcome = await runtime.quotaCheckService.checkAll(model ?? QUOTA_CHECK_MODEL)
           return { state: 'checked', model: outcome.model }
+        },
+        // Guarded like the quota sweep: every parked account gets one status
+        // read and the claimable ones one claim, so this is not a read-only
+        // action and stays behind the control route's key and loopback guard.
+        ...runtime.checkinService === undefined ? {} : {
+          checkin: async () => {
+            if (stopped) return { state: 'failed', reason: 'plugin is stopping' }
+            const sweep = await runtime.checkinService!.sweepAll()
+            const claimed = sweep.rows.filter(row => row.outcome === 'claimed').length
+            const failed = sweep.rows.filter(row => row.outcome === 'failed').length
+            // A sweep that reached the upstream but claimed nothing is still a
+            // completed sweep: the card renders the rows, and `state` only
+            // distinguishes "ran" from "could not run".
+            return { state: 'checked', reason: `${claimed} claimed, ${failed} failed of ${sweep.rows.length}` }
+          },
         },
       }, probeKey)
       // The switching write route. Guarded by the same in-process key as probe

@@ -238,3 +238,49 @@ describe('probe control route: check-quota', () => {
     }
   })
 })
+
+/**
+ * `checkin` — the action behind the card's daily check-in button. It reads every
+ * parked account's reward state and claims the unclaimed ones, so it shares the
+ * same key and loopback guards and takes no caller-supplied payload at all.
+ */
+describe('probe control route: checkin', () => {
+  it('runs the sweep and answers with its outcome', async () => {
+    let calls = 0
+    const { origin, key } = await mount({
+      checkin: async () => {
+        calls += 1
+        return { state: 'checked', reason: '2 claimed, 0 failed of 2' }
+      },
+    })
+    const result = await post(origin, { action: 'checkin' }, { 'X-WorkBuddy-Probe-Key': key })
+    expect(result).toMatchObject({ status: 200, body: { state: 'checked' } })
+    expect(calls).toBe(1)
+  })
+
+  it('refuses the sweep with no key, and with a wrong one', async () => {
+    const { origin } = await mount({ checkin: async () => ({ state: 'checked' }) })
+    expect((await post(origin, { action: 'checkin' })).status).toBe(403)
+    expect((await post(origin, { action: 'checkin' }, { 'X-WorkBuddy-Probe-Key': 'nope' })).status).toBe(403)
+  })
+
+  it('says so when the host has no slot store to check in', async () => {
+    const { origin, key } = await mount()
+    const result = await post(origin, { action: 'checkin' }, { 'X-WorkBuddy-Probe-Key': key })
+    expect(result).toMatchObject({ status: 404, body: { error: 'checkin-not-supported' } })
+  })
+
+  it('ignores a caller-supplied account list', async () => {
+    // The sweep is defined over the parked slots; which accounts get a claim
+    // must not be something a page can choose.
+    let received: unknown
+    const { origin, key } = await mount({
+      checkin: async (...args: unknown[]) => {
+        received = args
+        return { state: 'checked' }
+      },
+    })
+    await post(origin, { action: 'checkin', accounts: ['acct-1'] }, { 'X-WorkBuddy-Probe-Key': key })
+    expect(received).toEqual([])
+  })
+})
