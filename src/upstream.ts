@@ -1382,7 +1382,42 @@ export function parseModelCatalog(
       .map(id => byId.get(id))
       .filter((model): model is WorkBuddyUpstreamModel => model !== undefined)
     if (models.length === 0) throw new Error('workbuddy model catalog resolved to an empty list')
-    return models
+    return disambiguateDisplayNames(models)
+}
+
+/**
+ * Make display names unique within one catalog.
+ *
+ * The CN document names both `hy3` and `hy3-x` "Hy3" — two neighbouring rows
+ * whose rates differ (`x0.00` free versus `x0.05`), so the picker and the probe
+ * card render two identical rows and the user cannot tell which one they are
+ * paying for. The static fallback spells the second one "Hy3-X", but the live
+ * fetch overwrote that correction: as soon as the roster gained the id, the
+ * collision came back through the parse path.
+ *
+ * The suffix comes from the id itself — whatever follows the shared name stem
+ * — so `hy3-x` reads "Hy3-X" again. Ids are untouched: they are the wire
+ * contract the request path and the shim route on. Only exact (case-
+ * insensitive) collisions are rewritten; a distinct upstream name such as
+ * `MiniMax-M3` for `minimax-m3-pay` keeps the upstream's own wording.
+ */
+function disambiguateDisplayNames(models: readonly WorkBuddyUpstreamModel[]): readonly WorkBuddyUpstreamModel[] {
+  const seen = new Set<string>()
+  return models.map(model => {
+    const key = model.name.trim().toLowerCase()
+    if (!seen.has(key)) {
+      seen.add(key)
+      return model
+    }
+    // Derive the distinguishing tail from the id. A collision whose id does not
+    // start with the name (`kimi-k3-2` named "Kimi-K3") yields no tail, so the
+    // upstream wording is left as-is rather than inventing a label.
+    const tail = model.id.toLowerCase().startsWith(key) ? model.id.slice(key.length) : ''
+    if (tail === '') return model
+    const name = `${model.name}${tail.toUpperCase()}`
+    seen.add(name.toLowerCase())
+    return { ...model, name }
+  })
 }
 
 /**

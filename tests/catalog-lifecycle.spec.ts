@@ -138,7 +138,7 @@ describe('catalog lifecycle', () => {
       expect((await ctx.llm.listModels('workbuddy')).map(model => model.id)).toEqual(['live-model'])
     })
     // The upstream roster replaced the built-in fallback entirely.
-    expect((await ctx.llm.listModels('workbuddy')).map(model => model.id)).not.toContain('minimax-m3')
+    expect((await ctx.llm.listModels('workbuddy')).map(model => model.id)).not.toContain('minimax-m3-pay')
   })
 
   it('keeps the fallback roster and retries after a failed fetch', async () => {
@@ -170,7 +170,7 @@ describe('catalog lifecycle', () => {
     })
     // The failed fetch leaves the per-variant fallback serving: the group is
     // visible and usable rather than empty.
-    expect((await ctx.llm.listModels('workbuddy')).map(model => model.id)).toContain('minimax-m3')
+    expect((await ctx.llm.listModels('workbuddy')).map(model => model.id)).toContain('minimax-m3-pay')
 
     // Without the retry this stayed on the fallback list until a manual
     // refresh — a startup network blip should not require user action.
@@ -357,7 +357,7 @@ describe('catalog lifecycle', () => {
     expect(String(after.catalog.error)).toMatch(/503|upstream/i)
     const serving = (await ctx.llm.listModels('workbuddy')).map(model => model.id)
     expect(serving).not.toContain('acct-a-model')
-    expect(serving).toContain('minimax-m3')
+    expect(serving).toContain('minimax-m3-pay')
 
     // Recovery: the same manual action once the upstream answers again.
     failCatalog = false
@@ -449,7 +449,7 @@ describe('identity changes during catalog loading', () => {
     await vi.waitFor(async () => {
       const ids = (await ctx.llm.listModels('workbuddy')).map(model => model.id)
       expect(ids).not.toContain('account-a-model')
-      expect(ids).toContain('minimax-m3')
+      expect(ids).toContain('minimax-m3-pay')
     })
   }, 45_000)
 

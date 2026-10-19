@@ -185,8 +185,7 @@ describe('Composer model probe', () => {
   it('explains the click in a tooltip on hover, not a native title', async () => {
     await mount()
     expect(tooltips()).toHaveLength(0)
-    const wrapper = view!.root.findAllByType('span')[0]!
-    await act(async () => { wrapper.props.onMouseEnter() })
+    await act(async () => { probeButton().props.onMouseEnter() })
     expect(tooltips()).toHaveLength(1)
     expect(tooltips()[0]!.children.join('')).toContain('glm-5.2')
     // The tooltip is the accessible description; no `title` attribute is used.
@@ -205,8 +204,7 @@ describe('Composer model probe', () => {
     await mount()
     expect(buttonLabels()).not.toContain(en.probeNoteDismiss)
     // The result is still discoverable: the tooltip reports it on hover.
-    const wrapper = view!.root.findAllByType('span')[0]!
-    await act(async () => { wrapper.props.onMouseEnter() })
+    await act(async () => { probeButton().props.onMouseEnter() })
     expect(tooltips()).toHaveLength(1)
     expect(tooltips()[0]!.children.join('')).toContain('low / high')
   })

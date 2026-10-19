@@ -185,6 +185,14 @@ export async function workBuddyWebStatus(
         // cached row): the card then says the price needs a refresh instead of
         // repeating a stale figure or implying the model is free.
         ...model.billing?.rateUnknown === true ? { rateUnknown: true as const } : {},
+        // Declared reasoning levels ride along so the probe section can answer
+        // "what is known" when a detection comes back undecided.
+        ...(model.reasoning?.supportedEfforts?.length ?? 0) > 0
+          ? { declaredEfforts: model.reasoning!.supportedEfforts! }
+          : {},
+        ...model.reasoning?.defaultEffort !== undefined
+          ? { defaultEffort: model.reasoning.defaultEffort }
+          : {},
         // Verbatim from the upstream catalog; omitted when it said nothing.
         ...typeof model.contextWindow === 'number' && model.contextWindow > 0
           ? { contextWindow: model.contextWindow }

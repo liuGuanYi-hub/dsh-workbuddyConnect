@@ -34,7 +34,7 @@ describe('WorkBuddy plugin card', () => {
       probe: {
         consent: true,
         running: false,
-        candidates: ['hy3', 'glm-5.2', 'minimax-m3'],
+        candidates: ['hy3', 'glm-5.2', 'minimax-m3-pay'],
         results: [],
         ...overrides,
       },
@@ -122,7 +122,7 @@ describe('WorkBuddy plugin card', () => {
   it('shows the confirmation inside the row that asked for it', async () => {
     // Rendered after the whole list, the confirmation sat at the bottom of a
     // long candidate list: the question was a screen away from the button.
-    status({ candidates: ['hy3', 'glm-5.2', 'minimax-m3'] })
+    status({ candidates: ['hy3', 'glm-5.2', 'minimax-m3-pay'] })
     await mount()
 
     // Open the confirmation for the FIRST candidate.
@@ -133,14 +133,14 @@ describe('WorkBuddy plugin card', () => {
     // It belongs to the first row, i.e. it precedes the later candidates in
     // document order rather than trailing the list.
     const tree = JSON.stringify(view!.toJSON())
-    expect(tree.indexOf(confirmBody)).toBeLessThan(tree.indexOf('minimax-m3'))
+    expect(tree.indexOf(confirmBody)).toBeLessThan(tree.indexOf('minimax-m3-pay'))
   })
 
   it('names probe candidates from the catalog rows before the stored result', async () => {
     // Display-name priority: catalog model name → stored probe result name →
     // raw id. The action keeps using the id regardless of what the name is.
     status({
-      candidates: ['hy3', 'glm-5.2', 'minimax-m3'],
+      candidates: ['hy3', 'glm-5.2', 'minimax-m3-pay'],
       results: [{ id: 'glm-5.2', name: 'Stored Name', validation: 'non-validating', efforts: [], probedAt: Date.now() }],
     })
     statusBody.models = [
@@ -154,7 +154,7 @@ describe('WorkBuddy plugin card', () => {
     expect(tree).toContain('GLM 5.2')
     expect(tree).not.toContain('Stored Name')
     // …and an id the catalog does not know still renders as itself.
-    expect(tree).toContain('minimax-m3')
+    expect(tree).toContain('minimax-m3-pay')
   })
 
   it('keeps a detected model in the candidate list, relabelled', async () => {

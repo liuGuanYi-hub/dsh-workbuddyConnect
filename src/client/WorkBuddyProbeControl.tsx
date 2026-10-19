@@ -105,7 +105,7 @@ const creditStyle: CSSProperties = {
   lineHeight: '16px',
   color: 'var(--dsw-alias-label-tertiary)',
   whiteSpace: 'nowrap',
-  padding: '0 4px',
+  padding: '0 4px 0 0',
 }
 
 /**
@@ -520,11 +520,7 @@ function ModelProbe({ model, card, label, t }: {
   return (
     <span
       style={wrapperStyle}
-      onMouseEnter={() => { setTooltipVisible(true) }}
-      onMouseLeave={() => { setTooltipVisible(false) }}
     >
-      {credit === undefined ? null : <span style={creditStyle}>{credit}</span>}
-
       <button
         type="button"
         style={{ ...refreshStyle, opacity: refreshing ? 0.6 : 1, cursor: refreshing ? 'default' : 'pointer' }}
@@ -541,6 +537,8 @@ function ModelProbe({ model, card, label, t }: {
         </svg>
       </button>
 
+      {credit === undefined ? null : <span style={creditStyle}>{credit}</span>}
+
       {visible && (
         <button
           type="button"
@@ -550,6 +548,8 @@ function ModelProbe({ model, card, label, t }: {
           aria-expanded={confirming}
           disabled={disabled}
           onClick={() => { setConfirming(true) }}
+          onMouseEnter={() => { setTooltipVisible(true) }}
+          onMouseLeave={() => { setTooltipVisible(false) }}
           onFocus={() => { setTooltipVisible(true) }}
           onBlur={() => { setTooltipVisible(false) }}
           style={{ ...buttonStyle, opacity: disabled && !confirming ? 0.6 : 1, cursor: disabled ? 'default' : 'pointer' }}

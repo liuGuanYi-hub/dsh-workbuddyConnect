@@ -112,6 +112,18 @@ export interface WorkBuddyWebProbeModel {
   /** `validating` results carry efforts; the other states never do. */
   validation: 'validating' | 'non-validating' | 'unknown'
   efforts: readonly string[]
+  /**
+   * Reasoning levels the catalogue itself declares, when it declares any.
+   *
+   * The probe section shows these when a detection cannot decide (the upstream
+   * ignored the sentinel effort): "we could not measure it" is a different
+   * message from "nothing is known", and the declared levels are already in
+   * hand, so the card does not have to send another request to say something
+   * useful.
+   */
+  declaredEfforts?: readonly string[]
+  /** The level the upstream applies when a request names none. */
+  defaultEffort?: string
   probedAt: number
 }
 
@@ -426,6 +438,18 @@ export interface WorkBuddyWebModelBadge {
    * be repeated. The card renders "refresh to see the price" instead.
    */
   rateUnknown?: true
+  /**
+   * Reasoning levels the catalogue itself declares, when it declares any.
+   *
+   * The probe section shows these when a detection cannot decide (the upstream
+   * ignored the sentinel effort): "we could not measure it" is a different
+   * message from "nothing is known", and the declared levels are already in
+   * hand, so the card does not have to send another request to say something
+   * useful.
+   */
+  declaredEfforts?: readonly string[]
+  /** The level the upstream applies when a request names none. */
+  defaultEffort?: string
   /**
    * Context capacity in tokens, taken verbatim from the upstream
    * `maxAllowedSize`/`maxInputTokens`, or from the international document's

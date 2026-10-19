@@ -645,18 +645,21 @@ describe('CN catalog: /v3/config roster, badge merge, and fallback consistency',
 
   /** Raw `/v3/config` rows for the 2026-09-23 CN roster, verbatim from the live document. */
   const LIVE_ROWS: readonly Record<string, unknown>[] = [
-    { id: 'hy4-preview', name: 'Hy4 preview', maxInputTokens: 1_000_000, maxOutputTokens: 64_000, supportsImages: true, supportsReasoning: true, onlyReasoning: true, reasoning: { canDisableThinking: false, defaultEffort: 'high', summary: 'auto', supportedEfforts: ['high'] }, credits: 'x0.29 credits' },
+    { id: 'hy4-preview', name: 'Hy4 preview', maxInputTokens: 960_000, maxOutputTokens: 64_000, supportsImages: true, supportsReasoning: true, onlyReasoning: true, reasoning: { canDisableThinking: false, defaultEffort: 'high', summary: 'auto', supportedEfforts: ['high'] }, credits: 'x0.29 credits' },
     { id: 'hy3', name: 'Hy3', maxInputTokens: 192_000, maxOutputTokens: 64_000, supportsImages: true, supportsReasoning: true, onlyReasoning: true, reasoning: { effort: 'high', summary: 'auto' }, credits: 'x0.00 credits' },
     { id: 'hy3-x', name: 'Hy3', maxInputTokens: 192_000, maxOutputTokens: 64_000, supportsImages: true, supportsReasoning: true, onlyReasoning: true, reasoning: { effort: 'high', summary: 'auto' }, credits: 'x0.05 credits' },
-    { id: 'deepseek-v4.1-flash', name: 'Deepseek-V4.1-Flash', maxInputTokens: 1_000_000, maxOutputTokens: 128_000, supportsImages: true, supportsReasoning: true, onlyReasoning: true, reasoning: { effort: 'high', summary: 'auto' }, credits: 'x0.03 credits' },
-    { id: 'glm-5.3', name: 'GLM-5.3', maxInputTokens: 1_000_000, maxOutputTokens: 64_000, supportsImages: true, supportsReasoning: true, onlyReasoning: true, reasoning: { effort: 'medium', summary: 'auto' }, credits: 'x0.79 credits' },
-    { id: 'glm-5.3-flash', name: 'GLM-5.3-Flash', maxInputTokens: 1_000_000, maxOutputTokens: 131_072, supportsImages: true, supportsReasoning: true, onlyReasoning: true, reasoning: { canDisableThinking: true, defaultEffort: 'high', summary: 'auto', supportedEfforts: ['low', 'high', 'max'] }, credits: 'x0.06 credits' },
-    { id: 'glm-5.2', name: 'GLM-5.2', maxInputTokens: 1_000_000, maxOutputTokens: 64_000, supportsImages: true, supportsReasoning: true, onlyReasoning: true, reasoning: { effort: 'medium', summary: 'auto' }, credits: 'x0.79 credits' },
-    { id: 'glm-5.1', name: 'GLM-5.1', maxInputTokens: 200_000, maxOutputTokens: 48_000, supportsImages: true, supportsReasoning: true, onlyReasoning: true, reasoning: { effort: 'medium', summary: 'auto' }, credits: 'x0.79 credits' },
+    { id: 'step-5-preview', name: 'Step-5-Preview', maxInputTokens: 1_000_000, maxOutputTokens: 64_000, supportsImages: true, supportsReasoning: true, onlyReasoning: true, reasoning: { canDisableThinking: false, defaultEffort: 'high', summary: 'auto', supportedEfforts: ['low', 'medium', 'high'] }, credits: 'x0.00 credits' },
+    { id: 'space-bunny', name: 'Space-Bunny', maxInputTokens: 1_000_000, maxOutputTokens: 128_000, supportsImages: true, supportsReasoning: true, onlyReasoning: true, reasoning: { canDisableThinking: false, defaultEffort: 'max', summary: 'auto', supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'] }, credits: 'x0.08 credits' },
+    { id: 'deepseek-v4.1-flash', name: 'Deepseek-V4.1-Flash', maxInputTokens: 1_000_000, maxOutputTokens: 128_000, supportsImages: true, supportsReasoning: true, onlyReasoning: true, reasoning: { canDisableThinking: true, defaultEffort: 'high', summary: 'auto', supportedEfforts: ['low', 'high', 'max'] }, credits: 'x0.11 credits' },
+    { id: 'glm-5.3', name: 'GLM-5.3', maxInputTokens: 1_000_000, maxOutputTokens: 64_000, supportsImages: true, supportsReasoning: true, onlyReasoning: true, reasoning: { canDisableThinking: false, defaultEffort: 'max', summary: 'auto', supportedEfforts: ['low', 'high', 'max'] }, credits: 'x0.79 credits' },
+    { id: 'glm-5.3-flash', name: 'GLM-5.3-Flash', maxInputTokens: 1_000_000, maxOutputTokens: 131_072, supportsImages: true, supportsReasoning: true, onlyReasoning: true, reasoning: { canDisableThinking: false, defaultEffort: 'high', summary: 'auto', supportedEfforts: ['low', 'high', 'max'] }, credits: 'x0.06 credits' },
+    { id: 'glm-5.3-flashx', name: 'GLM-5.3-FlashX', maxInputTokens: 1_000_000, maxOutputTokens: 131_072, supportsImages: true, supportsReasoning: true, onlyReasoning: true, reasoning: { canDisableThinking: false, defaultEffort: 'high', summary: 'auto', supportedEfforts: ['low', 'high', 'max'] }, credits: 'x0.14 credits' },
+    { id: 'glm-5.2', name: 'GLM-5.2', maxInputTokens: 1_000_000, maxOutputTokens: 64_000, supportsImages: false, supportsReasoning: true, onlyReasoning: true, reasoning: { effort: 'medium', summary: 'auto' }, credits: 'x0.79 credits' },
+    { id: 'glm-5.1', name: 'GLM-5.1', maxInputTokens: 200_000, maxOutputTokens: 48_000, supportsImages: false, supportsReasoning: true, onlyReasoning: true, reasoning: { effort: 'medium', summary: 'auto' }, credits: 'x0.79 credits' },
     { id: 'glm-5v-turbo', name: 'GLM-5v-Turbo', maxInputTokens: 200_000, maxOutputTokens: 64_000, supportsImages: true, supportsReasoning: true, onlyReasoning: true, reasoning: { effort: 'medium', summary: 'auto' }, credits: 'x0.71 credits' },
-    { id: 'minimax-m3', name: 'MiniMax-M3', maxInputTokens: 512_000, maxOutputTokens: 64_000, supportsImages: true, supportsReasoning: true, onlyReasoning: true, reasoning: { effort: 'medium', summary: 'auto' }, credits: 'x0.25 credits' },
-    { id: 'minimax-m2.7', name: 'MiniMax-M2.7', maxInputTokens: 200_000, maxOutputTokens: 48_000, supportsImages: true, supportsReasoning: true, onlyReasoning: true, reasoning: { effort: 'medium', summary: 'auto' }, credits: 'x0.19 credits' },
-    { id: 'kimi-k3-1', name: 'Kimi-K3', maxInputTokens: 1_000_000, maxOutputTokens: 32_000, supportsImages: true, supportsReasoning: true, onlyReasoning: true, reasoning: { effort: 'medium', summary: 'auto' }, credits: 'x1.62 credits' },
+    { id: 'minimax-m3-pay', name: 'MiniMax-M3', maxInputTokens: 512_000, maxOutputTokens: 128_000, supportsImages: true, supportsReasoning: true, onlyReasoning: true, reasoning: { effort: 'medium', summary: 'auto' }, credits: 'x0.25 credits' },
+    { id: 'minimax-m2.7', name: 'MiniMax-M2.7', maxInputTokens: 200_000, maxOutputTokens: 48_000, supportsImages: true, supportsReasoning: true, onlyReasoning: true, reasoning: { effort: 'medium', summary: 'auto' }, credits: 'x0.26 credits' },
+    { id: 'kimi-k3-2', name: 'Kimi-K3', maxInputTokens: 1_000_000, maxOutputTokens: 32_000, supportsImages: true, supportsReasoning: true, onlyReasoning: true, reasoning: { effort: 'medium', summary: 'auto' }, credits: 'x1.62' },
     { id: 'kimi-k2.8-preview', name: 'Kimi-K2.8-Preview', maxInputTokens: 1_000_000, maxOutputTokens: 64_000, supportsImages: true, supportsReasoning: true, onlyReasoning: true, reasoning: { canDisableThinking: true, defaultEffort: 'high', summary: 'auto', supportedEfforts: ['low', 'high', 'max'] }, credits: 'x0.77 credits' },
     { id: 'kimi-k2.7', name: 'Kimi-K2.7-Code', maxInputTokens: 256_000, maxOutputTokens: 32_000, supportsImages: true, supportsReasoning: true, onlyReasoning: true, reasoning: { effort: 'medium', summary: 'auto' }, credits: 'x0.57 credits' },
     { id: 'kimi-k2.6', name: 'Kimi-K2.6', maxInputTokens: 256_000, maxOutputTokens: 32_000, supportsImages: true, supportsReasoning: true, onlyReasoning: true, reasoning: { effort: 'medium', summary: 'auto' }, credits: 'x0.52 credits' },
@@ -667,8 +670,8 @@ describe('CN catalog: /v3/config roster, badge merge, and fallback consistency',
   const CONSOLE_BADGES = new Map<string, readonly string[]>([
     ['hy4-preview', ['badge:夜间免费:#FF0000']],
     ['hy3', ['badge:限时免费:#FF0000']],
+    ['step-5-preview', ['badge:独家限免:#FF0000']],
     ['glm-5.2', ['badge:夜间折扣:#1E90FF']],
-    ['deepseek-v4.1-flash', ['badge:独家优惠:#FF0000']],
   ])
 
   it('membership is the cli roster intersected with usable rows', () => {
@@ -701,21 +704,20 @@ describe('CN catalog: /v3/config roster, badge merge, and fallback consistency',
     // stable field — membership, order, metadata, credits, free flag.
     // Promotional badges are the deliberate exception: they are dynamic
     // console-side promotions, so they ride the live merge only and are
-    // stripped here before the comparison. (The other deviation is
-    // display-only: the fallback renames `hy3-x`, which the document names
-    // "Hy3", and the parse cannot know to do that.)
+    // stripped here before the comparison. The `hy3-x` rename is no longer a
+    // deviation — the parser applies it too (`disambiguateDisplayNames`), so
+    // the document naming both rows "Hy3" cannot reach the picker.
     const document = { models: LIVE_ROWS, agents: [{ name: 'cli', models: LIVE_ROSTER }] }
     const parsed = parseModelCatalog(document, false, CONSOLE_BADGES)
     const stable = parsed.map(model => {
       const { badges: _badges, ...billing } = model.billing ?? {}
       return { ...model, billing }
     })
-    const fallback = FALLBACK_WORKBUDDY_MODELS.map(model => model.id === 'hy3-x' ? { ...model, name: 'Hy3' } : model)
-    expect(stable).toEqual(fallback)
+    expect(stable).toEqual(FALLBACK_WORKBUDDY_MODELS)
     // The badges themselves stay live-only, never baked into the fallback.
     expect(FALLBACK_WORKBUDDY_MODELS.every(model => model.billing?.badges === undefined)).toBe(true)
     expect(parsed.filter(model => model.billing?.badges !== undefined).map(model => model.id).sort())
-      .toEqual(['deepseek-v4.1-flash', 'glm-5.2', 'hy3', 'hy4-preview'])
+      .toEqual(['glm-5.2', 'hy3', 'hy4-preview', 'step-5-preview'])
   })
 })
 

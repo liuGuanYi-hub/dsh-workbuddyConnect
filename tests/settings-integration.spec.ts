@@ -223,7 +223,8 @@ describe('WorkBuddy Host settings integration', () => {
     // every row of the current CN roster declares image support.
     const modalities = new Map(models.map(model => [model.id, model.inputModalities]))
     expect(modalities.get('hy3')).toContain('image')
-    expect(modalities.get('glm-5.1')).toContain('image')
+    expect(modalities.get('glm-5.1')).not.toContain('image')
+    expect(modalities.get('glm-5.2')).not.toContain('image')
 
     // A settings write validates against the schema and persists.
     await ctx.settings.update(WorkBuddy.WORKBUDDY_SETTINGS_NS, { authFile: '/tmp/other-workbuddy.info' })
@@ -349,8 +350,8 @@ describe('WorkBuddy Host settings integration', () => {
     // declared efforts).
     const cn = (await ctx.llm.listModels('workbuddy')).map(model => model.id)
     const ai = (await ctx.llm.listModels('workbuddy-ai')).map(model => model.id)
-    expect(cn).toContain('minimax-m3')
-    expect(ai).not.toContain('minimax-m3')
+    expect(cn).toContain('minimax-m3-pay')
+    expect(ai).not.toContain('minimax-m3-pay')
     expect(ai).toContain('gpt-5.6-luna')
     expect(cn).not.toContain('gpt-5.6-luna')
 

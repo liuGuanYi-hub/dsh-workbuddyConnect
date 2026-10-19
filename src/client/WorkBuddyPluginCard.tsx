@@ -273,6 +273,34 @@ const modelBadgeChipStyle: CSSProperties = {
 }
 
 /**
+ * Chip for a probe that came back `non-validating`.
+ *
+ * Amber rather than the success green: the upstream accepted a sentinel effort,
+ * which tells us it does not check the parameter — not that any level works.
+ * The state is an observation, and it used to share the green chip with the
+ * verified levels, which read as "these are the supported levels".
+ */
+const probeChipNotValidatingStyle: CSSProperties = {
+  padding: '1px 8px', borderRadius: 999, fontSize: 11, lineHeight: '18px',
+  background: 'var(--dsw-alias-state-warning-subtle, rgba(214, 142, 23, 0.14))',
+  color: 'var(--dsw-alias-state-warning-primary, #b26a00)',
+}
+
+/** Chip for a probe that never produced an answer (cancelled or failed). */
+const probeChipUnknownStyle: CSSProperties = {
+  padding: '1px 8px', borderRadius: 999, fontSize: 11, lineHeight: '18px',
+  background: 'var(--dsw-alias-fill-tertiary, rgba(127, 127, 127, 0.12))',
+  color: 'var(--dsw-alias-label-tertiary, #8a8a8a)',
+}
+
+/** Pick the chip style that matches what the observation actually says. */
+function probeChipStyleFor(result: { validation: string, efforts: readonly string[] }): CSSProperties {
+  if (result.validation === 'validating' && result.efforts.length > 0) return modelBadgeChipStyle
+  if (result.validation === 'non-validating') return probeChipNotValidatingStyle
+  return probeChipUnknownStyle
+}
+
+/**
  * Localize an upstream promotional badge label, with an unknown-badge fallback.
  *
  * The CN catalog spells badges in Chinese (`限时免费`, `夜间折扣`); the
@@ -285,7 +313,27 @@ function modelBadgeLabel(badge: string, t: WorkBuddyPluginCardInjected['t']): st
   if (badge === '限时免费') return t('badgeLimitedFree')
   if (badge === '夜间折扣') return t('badgeNightDiscount')
   if (badge === 'Free now') return t('badgeFreeNow')
+  if (badge === '夜间免费') return t('badgeNightFree')
+  if (badge === '独家限免') return t('badgeExclusiveFree')
   return badge
+}
+
+/**
+ * Upstream badge labels that already say "you pay nothing", in either language.
+ *
+ * The catalog reports both `free: true` and a promotional badge for the same
+ * row (`hy3` carries `限时免费`, `step-5-preview` carries `独家限免`). Rendering
+ * the generic free chip on top of those printed the same fact twice and, worse,
+ * pushed the second chip past the row's horizontal budget — it collapsed into a
+ * sliver instead of wrapping. One chip per row is enough: a badge that already
+ * states the offer is preferred over the bare "Free".
+ */
+const FREE_STATEMENT_BADGES: ReadonlySet<string> = new Set(['限时免费', '夜间免费', '独家限免', 'Free now'])
+
+/** Whether a row still needs the generic free chip next to its badges. */
+function needsFreeChip(free: boolean | undefined, badges: readonly string[] | undefined): boolean {
+  if (free !== true) return false
+  return !(badges ?? []).some(badge => FREE_STATEMENT_BADGES.has(badge))
 }
 const progressTrackStyle: CSSProperties = { height: 8, overflow: 'hidden', borderRadius: 999, background: 'var(--dsw-alias-bg-layer-2, rgba(0, 0, 0, 0.08))' }
 
@@ -661,7 +709,7 @@ function ModelOfferRow({ model, t }: {
           {model.badges?.map(badge => (
             <span key={badge} style={modelBadgeChipStyle}>{modelBadgeLabel(badge, t)}</span>
           ))}
-          {model.free === true ? <span style={modelBadgeChipStyle}>{t('freeModel')}</span> : null}
+          {needsFreeChip(model.free, model.badges) ? <span style={modelBadgeChipStyle}>{t('freeModel')}</span> : null}
         </span>
       </div>
       {model.credits === undefined
@@ -786,7 +834,7 @@ function ContextTable({ models, t, useMaximumContextWindow, contextPreferenceDis
                     {model.badges?.map(badge => (
                       <span key={badge} style={modelBadgeChipStyle}>{modelBadgeLabel(badge, t)}</span>
                     ))}
-                    {model.free === true ? <span style={modelBadgeChipStyle}>{t('freeModel')}</span> : null}
+                    {needsFreeChip(model.free, model.badges) ? <span style={modelBadgeChipStyle}>{t('freeModel')}</span> : null}
                   </span>
                   {model.credits === undefined ? null
                     : <span style={modelRateStyle}>{model.credits}</span>}
@@ -896,17 +944,27 @@ function ProbeSection({ probe, models, t, onDetect, onClear, busy }: {
               // Display name: the catalog's own label first, then whatever the
               // recorded probe stored, then the bare id. The *action* below
               // keeps using the id regardless of what the name resolves to.
-              const name = models?.find(model => model.id === id)?.name ?? result?.name ?? id
+              const row = models?.find(model => model.id === id)
+              const name = row?.name ?? result?.name ?? id
+              // A detection that comes back undecided still has something to
+              // say: the catalogue's own declaration. Shown next to the chip so
+              // the row does not read as "unknown" when the answer is known.
+              const declared = (row?.declaredEfforts?.length ?? 0) > 0
+                ? row!.declaredEfforts!.join(' / ')
+                : row?.defaultEffort
               return (
                 <div key={id} style={modelOfferStyle}>
                   <div style={probeRowStyle}>
                     <span>{name}</span>
                     <span style={probeRowEndStyle}>
                       {result === undefined ? null : (
-                        <span style={modelBadgeChipStyle}>
+                        <span style={probeChipStyleFor(result)}>
                           {result.validation === 'validating' && result.efforts.length > 0
                             ? result.efforts.join(' / ')
-                            : t(result.validation === 'non-validating' ? 'probeResultNotValidating' : 'probeResultUnknown')}
+                            : result.validation === 'non-validating'
+                              ? t('probeResultNotValidating')
+                                + (declared === undefined ? '' : t('probeDeclaredSuffix', { levels: declared }))
+                              : t('probeResultUnknown')}
                         </span>
                       )}
                       <button
