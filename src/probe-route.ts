@@ -82,6 +82,20 @@ export interface WorkBuddyProbeRouteOptions {
    */
   checkin?: () => Promise<{ state: string; reason?: string }>
   /**
+   * Persist the automatic-switch preference (and optionally the threshold).
+   *
+   * A write like the others: it changes which account later requests are billed
+   * to, which is the same authority the accounts route guards.
+   */
+  setAutoSwitch?: (enabled: boolean, threshold?: number) => Promise<{ state: string; reason?: string }>
+  /**
+   * Run one balance sweep right now, instead of waiting for the timer.
+   *
+   * Costs nothing at the upstream (it reads billing documents, not chat), but it
+   * can switch accounts, so it stays on the guarded write route.
+   */
+  autoSwitchNow?: () => Promise<{ state: string; reason?: string }>
+  /**
    * Route path to mount. Defaults to the CN variant's path so existing callers
    * and tests keep their behaviour; the international variant passes its own.
    */
@@ -165,6 +179,19 @@ function parseAction(text: string): WorkBuddyProbeAction | undefined {
   // No payload at all: which accounts to claim for follows from the parked
   // slots, and a caller-supplied subset is exactly what must not be honoured.
   if (action === 'checkin') return { action: 'checkin' }
+  if (action === 'auto-switch-now') return { action: 'auto-switch-now' }
+  if (action === 'set-auto-switch') {
+    const enabled = wrapped['enabled']
+    if (typeof enabled !== 'boolean') return undefined
+    const threshold = wrapped['threshold']
+    // The threshold is optional; when present it must be a usable number.
+    // Negative or non-finite values are rejected rather than clamped: a floor of
+    // "-1" would mean "switch always", which is never what a user meant to ask
+    // for and would drain accounts in a loop.
+    if (threshold === undefined) return { action: 'set-auto-switch', enabled }
+    if (typeof threshold !== 'number' || !Number.isFinite(threshold) || threshold < 0) return undefined
+    return { action: 'set-auto-switch', enabled, threshold }
+  }
   if (action === 'probe') {
     const model = wrapped['model']
     if (typeof model !== 'string' || model.trim() === '') return undefined
@@ -256,6 +283,22 @@ export function workBuddyProbeHandler(
         }
         // Same shape as the quota sweep: the response is the completion signal.
         json(res, 200, await deps.checkin())
+        return
+      }
+      if (action.action === 'set-auto-switch') {
+        if (deps.setAutoSwitch === undefined) {
+          json(res, 404, { error: 'auto-switch-not-supported' })
+          return
+        }
+        json(res, 200, await deps.setAutoSwitch(action.enabled === true, action.threshold))
+        return
+      }
+      if (action.action === 'auto-switch-now') {
+        if (deps.autoSwitchNow === undefined) {
+          json(res, 404, { error: 'auto-switch-not-supported' })
+          return
+        }
+        json(res, 200, await deps.autoSwitchNow())
         return
       }
       json(res, 200, await deps.probe(action.model as string))

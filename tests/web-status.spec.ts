@@ -251,3 +251,88 @@ describe('quota check reporting', () => {
     expect(document).not.toHaveProperty('quotaCheck')
   })
 })
+
+/**
+ * The automatic-switch section.
+ *
+ * Its presence is the card's capability signal, but unlike the sweep sections it
+ * must appear *before* any sweep — the enable toggle and the threshold are
+ * configuration, and hiding them until a sweep has run would make the feature
+ * unreachable from the card entirely.
+ */
+describe('automatic switch reporting', () => {
+  it('carries the configuration and the last sweep', async () => {
+    const port = await startStatusServer({
+      autoSwitch: () => ({
+        enabled: true,
+        threshold: 49,
+        cooldownMs: 600_000,
+        running: false,
+        checkedAt: 1_800_000_000_000,
+        rows: [
+          { id: 'acct-1', label: '工作号', active: true, remaining: 42 },
+          { id: 'acct-2', label: '备用号', active: false, unlimited: true },
+          { id: 'acct-3', active: false, error: 'billing unavailable' },
+        ],
+        moveReason: 'active-below-threshold',
+        movedTo: 'acct-2',
+        movedFrom: 'acct-1',
+        switchCount: 1,
+      }),
+    })
+    const document = JSON.parse((await requestOnce({
+      port, method: 'GET', headers: { host: '127.0.0.1' },
+    })).body) as Record<string, unknown>
+    expect(document['autoSwitch']).toMatchObject({
+      enabled: true,
+      threshold: 49,
+      switchCount: 1,
+      rows: [
+        { id: 'acct-1', active: true, remaining: 42 },
+        // The uncapped row carries no number at all: the upstream's "no limit"
+        // is a sentinel, and rendering it as a figure would be a wrong number.
+        { id: 'acct-2', unlimited: true },
+        { id: 'acct-3', error: 'billing unavailable' },
+      ],
+    })
+  })
+
+  it('renders the configuration before any sweep has run', async () => {
+    const port = await startStatusServer({
+      autoSwitch: () => ({
+        enabled: false,
+        threshold: 49,
+        cooldownMs: 600_000,
+        running: false,
+        checkedAt: 0,
+        rows: [],
+        switchCount: 0,
+      }),
+    })
+    const document = JSON.parse((await requestOnce({
+      port, method: 'GET', headers: { host: '127.0.0.1' },
+    })).body) as Record<string, unknown>
+    expect(document['autoSwitch']).toMatchObject({ enabled: false, threshold: 49, checkedAt: 0 })
+  })
+
+  it('omits the section on a host with no slot store', async () => {
+    const port = await startStatusServer()
+    const document = JSON.parse((await requestOnce({
+      port, method: 'GET', headers: { host: '127.0.0.1' },
+    })).body) as Record<string, unknown>
+    expect(document).not.toHaveProperty('autoSwitch')
+  })
+
+  it('keeps serving the document when the section getter throws', async () => {
+    // The balance section is diagnostic; a failure in it must never cost the
+    // user the account and credit figures the card exists to show.
+    const port = await startStatusServer({
+      autoSwitch: () => { throw new Error('section exploded') },
+    })
+    const response = await requestOnce({ port, method: 'GET', headers: { host: '127.0.0.1' } })
+    expect(response.status).toBe(200)
+    const document = JSON.parse(response.body) as Record<string, unknown>
+    expect(document).not.toHaveProperty('autoSwitch')
+    expect(document['status']).toBeDefined()
+  })
+})

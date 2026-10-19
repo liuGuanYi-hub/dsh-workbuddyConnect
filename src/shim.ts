@@ -67,6 +67,18 @@ export interface WorkBuddyShimOptions {
    * where the hint falls back to describing the capture flow.
    */
   accounts?: WorkBuddyAccountStore
+  /**
+   * Called when the upstream refuses a request for insufficient credit, with
+   * the `uid:enterpriseId` key of the account that was refused.
+   *
+   * Runs beside the hint rather than replacing it: the hint explains to the user
+   * what happened, while this hook is what turns the refusal into a *repair* by
+   * moving to another account. Deliberately fire-and-forget — the caller is
+   * already composing an error response, and awaiting a switch would delay the
+   * error the user is waiting for. Any failure is the hook's own to log, never
+   * this response's to report.
+   */
+  onCreditRefusal?: (account: string | undefined) => void
 }
 
 const REQUEST_BODY_LIMIT = 64 * 1024 * 1024
@@ -121,7 +133,7 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
  * is the boundary, and the upstream credential comes from the store alone.
  */
 export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShim {
-  const { store, client, catalog, quota, accounts } = options
+  const { store, client, catalog, quota, accounts, onCreditRefusal } = options
   const logger = options.logger
 
   // Per-process shared secret. Lives only in memory; the adapter resolves it
@@ -253,6 +265,18 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       const remedy = result.kind === 'hard_credit'
         ? await exhaustionRemedy(account)
         : undefined
+      // Ask the auto-switcher to repair the situation, without waiting for it:
+      // the error below is what the user is blocked on, and a switch that lands
+      // after it has been written still fixes every later request. `void` plus a
+      // local try/catch keeps a misbehaving hook from turning this refusal into
+      // an unhandled rejection.
+      if (result.kind === 'hard_credit' && onCreditRefusal !== undefined) {
+        try {
+          onCreditRefusal(account)
+        } catch (error: unknown) {
+          logger?.warn('dsh-workbuddy-connect: credit-refusal hook threw', error)
+        }
+      }
       writeOpenAIError(
         res,
         KIND_STATUS[result.kind],

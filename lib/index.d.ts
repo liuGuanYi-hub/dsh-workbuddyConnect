@@ -1616,6 +1616,18 @@ interface WorkBuddyShimOptions {
    * where the hint falls back to describing the capture flow.
    */
   accounts?: WorkBuddyAccountStore;
+  /**
+   * Called when the upstream refuses a request for insufficient credit, with
+   * the `uid:enterpriseId` key of the account that was refused.
+   *
+   * Runs beside the hint rather than replacing it: the hint explains to the user
+   * what happened, while this hook is what turns the refusal into a *repair* by
+   * moving to another account. Deliberately fire-and-forget — the caller is
+   * already composing an error response, and awaiting a switch would delay the
+   * error the user is waiting for. Any failure is the hook's own to log, never
+   * this response's to report.
+   */
+  onCreditRefusal?: (account: string | undefined) => void;
 }
 /**
  * Start the loopback endpoint. Requests carry any bearer; the loopback bind
@@ -1981,6 +1993,23 @@ interface Config {
   probeConsent?: boolean;
   /** Use the largest context window the international catalog explicitly offers. */
   useMaximumContextWindow?: boolean;
+  /**
+   * Whether to move to another parked account automatically when the served
+   * one runs low on credit.
+   *
+   * Off by default, and for a reason that is not merely conservative: this is
+   * the one setting that changes which account the user's work is billed to
+   * *without being asked*. Somebody holding two accounts deliberately (a work
+   * one and a personal one) would not want them silently mixed.
+   */
+  autoSwitchAccount?: boolean;
+  /**
+   * Remaining credit at or below which the served account is abandoned.
+   *
+   * Read per sweep, so changing it applies to the next sweep rather than to the
+   * next restart. Defaults to {@link AUTO_SWITCH_DEFAULT_THRESHOLD}.
+   */
+  autoSwitchThreshold?: number;
 }
 declare const Config: z<Config>;
 /**

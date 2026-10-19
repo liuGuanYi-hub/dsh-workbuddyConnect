@@ -10,7 +10,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { WORKBUDDY_ACCOUNTS_PATH, WORKBUDDY_AI_ACCOUNTS_PATH, WORKBUDDY_AI_PROBE_PATH, WORKBUDDY_AI_STATUS_PATH, WORKBUDDY_PROBE_PATH, WORKBUDDY_STATUS_PATH, isWorkBuddySignedOutReasonCode } from '../status-paths.ts'
 import type { WorkBuddyAccountsAction, WorkBuddyWebAccount, WorkBuddyWebAccountsSection, WorkBuddyWebCreditExpiry } from '../status-paths.ts'
-import type { WorkBuddySignedOutReasonCode, WorkBuddyWebCheckinRow, WorkBuddyWebCheckinSection, WorkBuddyWebModelBadge, WorkBuddyWebProbeSection, WorkBuddyWebQuotaCheck, WorkBuddyWebQuotaCheckSection, WorkBuddyWebStatus, WorkBuddyWebVisibilitySection } from '../status-paths.ts'
+import type { WorkBuddySignedOutReasonCode, WorkBuddyWebAutoSwitchSection, WorkBuddyWebCheckinRow, WorkBuddyWebCheckinSection, WorkBuddyWebModelBadge, WorkBuddyWebProbeSection, WorkBuddyWebQuotaCheck, WorkBuddyWebQuotaCheckSection, WorkBuddyWebStatus, WorkBuddyWebVisibilitySection } from '../status-paths.ts'
 import { isWorkBuddyWebStatus } from './status-document.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
 
@@ -1380,10 +1380,198 @@ function QuotaCheckSection({ section, defaultModel, accounts, models, t, onCheck
  * parked account and changes upstream state, and the wording has to say that it
  * claims automatically rather than merely reporting.
  */
+/**
+ * Automatic account switching: the enable toggle, the threshold, and what the
+ * last balance sweep concluded.
+ *
+ * Shown even before any sweep has run, unlike the quota and check-in blocks.
+ * Those exist only once a sweep has produced rows, because until then there is
+ * nothing to read. Here there is: the feature's own configuration. A user who
+ * has just switched it on needs the checkbox to acknowledge that, and a section
+ * appearing only after the first sweep would read as "this host cannot do it".
+ *
+ * The rows are balances, not verdicts. `unlimited` and "could not read" are
+ * separate renderings rather than a number, because both would otherwise become
+ * a plausible-looking figure — and the whole promise of this feature is that it
+ * acts on what it actually observed.
+ */
+function AutoSwitchSection({ section, accounts, busy, onToggle, onCheckNow, t }: {
+  /** The switch state and the last sweep; undefined when unsupported here. */
+  section: WorkBuddyWebAutoSwitchSection | undefined
+  /** The parked accounts, for row names and the count the confirm asks about. */
+  accounts: readonly WorkBuddyWebAccount[]
+  busy: boolean
+  onToggle: (enabled: boolean, threshold?: number) => void
+  onCheckNow: () => void
+  t: WorkBuddyPluginCardInjected['t']
+}): React.ReactNode {
+  const [confirming, setConfirming] = useState(false)
+  const [running, setRunning] = useState(false)
+  const armed = useRef(false)
+  const isRunning = section?.running === true || running
+  useEffect(() => {
+    if (!running) return
+    if (section?.running === true) {
+      armed.current = true
+      return
+    }
+    if (!armed.current) return
+    armed.current = false
+    setRunning(false)
+  }, [running, section?.running])
+  // The threshold input is a draft: it is only persisted on save, so a user can
+  // type without every keystroke becoming a settings write.
+  const [draftThreshold, setDraftThreshold] = useState<string>('')
+  const savedThreshold = section?.threshold
+  useEffect(() => {
+    if (savedThreshold !== undefined) setDraftThreshold(String(savedThreshold))
+  }, [savedThreshold])
+  const nameOf = (row: { id: string, label?: string }): string => {
+    const account = accounts.find(candidate => candidate.id === row.id)
+    return account?.label ?? account?.nickname ?? row.label ?? row.id
+  }
+  /**
+   * One short sentence explaining why the last sweep did not move.
+   *
+   * A closed mapping rather than a host-supplied string: the host sends a reason
+   * code, so the sentence is translated here and the browser never has to trust
+   * prose from the wire.
+   */
+  const stayText = (reason: string | undefined): string | undefined => {
+    switch (reason) {
+      case 'disabled': return t('autoSwitchStayDisabled')
+      case 'no-accounts': return t('autoSwitchStayNoAccounts')
+      case 'no-active-account': return t('autoSwitchStayNoActive')
+      case 'active-balance-unknown': return t('autoSwitchStayBalanceUnknown')
+      case 'active-above-threshold': return t('autoSwitchStayAboveThreshold')
+      case 'active-unlimited': return t('autoSwitchStayUnlimited')
+      case 'cooldown': return t('autoSwitchStayCooldown')
+      case 'no-better-account': return t('autoSwitchStayNoBetter')
+      case 'nothing-to-gain': return t('autoSwitchStayNothingToGain')
+      default: return undefined
+    }
+  }
+  const moveText = (reason: string | undefined): string | undefined => {
+    switch (reason) {
+      case 'active-below-threshold': return t('autoSwitchMoveBelowThreshold')
+      case 'active-exhausted': return t('autoSwitchMoveExhausted')
+      default: return undefined
+    }
+  }
+  const lastRow = section?.lastSwitchAt === undefined
+    ? undefined
+    : section.lastSwitchAt
+  const parsedThreshold = Number(draftThreshold)
+  const thresholdUsable = draftThreshold.trim() !== ''
+    && Number.isFinite(parsedThreshold)
+    && parsedThreshold >= 0
+  return (
+    <div style={quotaGroupStyle}>
+      <div style={quotaLabelStyle}>
+        <span>{t('autoSwitchHeading')}</span>
+      </div>
+      <p style={bodyStyle}>{t('autoSwitchIntro', { threshold: section?.threshold ?? 0 })}</p>
+      <label style={{ ...bodyStyle, display: 'flex', alignItems: 'center', gap: 8 }}>
+        <input
+          type="checkbox"
+          checked={section?.enabled === true}
+          disabled={busy}
+          onChange={event => onToggle(event.target.checked)}
+        />
+        <span>{t('autoSwitchEnable')}</span>
+      </label>
+      <label style={{ ...bodyStyle, display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span>{t('autoSwitchThresholdLabel')}</span>
+        <input
+          type="number"
+          min={0}
+          step={1}
+          value={draftThreshold}
+          disabled={busy}
+          style={{ width: 90 }}
+          onChange={event => setDraftThreshold(event.target.value)}
+        />
+        <button
+          type="button"
+          disabled={busy || !thresholdUsable || parsedThreshold === savedThreshold}
+          onClick={() => onToggle(section?.enabled === true, parsedThreshold)}
+        >
+          {t('autoSwitchSave')}
+        </button>
+      </label>
+      {section === undefined ? null : (
+        <div style={quotaGroupStyle}>
+          {section.rows.map(row => (
+            <div key={row.id} style={bodyStyle}>
+              <strong>{nameOf(row)}</strong>
+              {row.active ? <span style={accountTagStyle}> {t('autoSwitchActive')}</span> : null}
+              {' — '}
+              {row.unlimited === true
+                ? t('autoSwitchUnlimited')
+                : row.remaining !== undefined
+                  ? t('autoSwitchRemaining', { credit: row.remaining })
+                  : t('autoSwitchUnknownBalance')}
+            </div>
+          ))}
+          <p style={bodyStyle}>
+            {section.checkedAt === 0
+              ? t('autoSwitchNever')
+              : t('autoSwitchAt', { time: formatExhaustedAt(section.checkedAt) })}
+          </p>
+          {section.stayReason === undefined ? null : <p style={bodyStyle}>{stayText(section.stayReason) ?? ''}</p>}
+          {section.moveReason === undefined ? null : <p style={bodyStyle}>{moveText(section.moveReason) ?? ''}</p>}
+          {section.movedTo === undefined ? null : <p style={bodyStyle}>{t('autoSwitchMoved', { to: nameOf({ id: section.movedTo }) })}</p>}
+          {lastRow === undefined || section.movedFrom === undefined || section.movedTo === undefined
+            ? null
+            : (
+              <p style={bodyStyle}>
+                {t('autoSwitchLastMove', {
+                  from: nameOf({ id: section.movedFrom }),
+                  to: nameOf({ id: section.movedTo }),
+                  time: formatExhaustedAt(lastRow),
+                })}
+              </p>
+            )}
+          {section.switchError === undefined ? null : <p style={bodyStyle}>{t('autoSwitchError', { message: section.switchError })}</p>}
+        </div>
+      )}
+      {confirming ? (
+        <div style={quotaGroupStyle}>
+          <p style={bodyStyle}>{t('autoSwitchConfirm', { count: accounts.length })}</p>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                setConfirming(false)
+                setRunning(true)
+                armed.current = false
+                onCheckNow()
+              }}
+            >
+              {t('autoSwitchConfirmAction')}
+            </button>
+            <button type="button" disabled={busy} onClick={() => setConfirming(false)}>
+              {t('cancel')}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          disabled={busy || isRunning}
+          onClick={() => setConfirming(true)}
+        >
+          {isRunning ? t('autoSwitchChecking') : t('autoSwitchNow')}
+        </button>
+      )}
+    </div>
+  )
+}
+
 function CheckinSection({ section, accounts, busy, onCheckin, t }: {
   /** The last sweep, or undefined when none has run in this process. */
-  section: WorkBuddyWebCheckinSection | undefined
-  /** The parked accounts, for row names and the count the confirm asks about. */
+  section: WorkBuddyWebCheckinSection | undefined  /** The parked accounts, for row names and the count the confirm asks about. */
   accounts: readonly WorkBuddyWebAccount[]
   busy: boolean
   onCheckin: () => void
@@ -1726,7 +1914,7 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
    * the host never accepts a prompt, a sentinel, or a model outside its own
    * catalog from here.
    */
-  const control = useCallback(async (action: { action: 'probe'; model: string } | { action: 'clear' } | { action: 'set-maximum-context-window'; enabled: boolean } | { action: 'set-model-visibility'; model: string; visible: boolean; account: string } | { action: 'check-quota' } | { action: 'checkin' }): Promise<void> => {
+  const control = useCallback(async (action: { action: 'probe'; model: string } | { action: 'clear' } | { action: 'set-maximum-context-window'; enabled: boolean } | { action: 'set-model-visibility'; model: string; visible: boolean; account: string } | { action: 'check-quota' } | { action: 'checkin' } | { action: 'set-auto-switch'; enabled: boolean; threshold?: number } | { action: 'auto-switch-now' }): Promise<void> => {
     const key = status?.status === 'signed-in' ? status.probeKey : undefined
     if (key === undefined) return
     // A visibility toggle runs on its own per-row in-flight set so the
@@ -1791,6 +1979,25 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
           ? String((value as Record<string, unknown>)['reason'])
           : t('requestFailed')
         throw new Error(t('checkinError', { message: reason }))
+      }
+      // The switch preference is the same class of write as the context-window
+      // checkbox: a `failed` answer means it did not persist, so the toggle must
+      // not be left claiming it did.
+      if (action.action === 'set-auto-switch'
+        && (typeof value !== 'object' || value === null || (value as Record<string, unknown>)['state'] !== 'updated')) {
+        const reason = typeof value === 'object' && value !== null && 'reason' in value
+          ? String((value as Record<string, unknown>)['reason'])
+          : t('requestFailed')
+        throw new Error(reason)
+      }
+      // A balance sweep the host did not run must not leave the previous rows on
+      // screen as though the click had produced them.
+      if (action.action === 'auto-switch-now'
+        && (typeof value !== 'object' || value === null || (value as Record<string, unknown>)['state'] !== 'checked')) {
+        const reason = typeof value === 'object' && value !== null && 'reason' in value
+          ? String((value as Record<string, unknown>)['reason'])
+          : t('requestFailed')
+        throw new Error(t('autoSwitchError', { message: reason }))
       }
       await refresh(controller.signal)
     } catch (error: unknown) {
@@ -2111,6 +2318,33 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
                               t={t}
                               busy={busy}
                               onCheck={() => { void control({ action: 'check-quota' }) }}
+                            />
+                          )}
+                          {/*
+                            * Automatic switching comes last among the account
+                            * blocks because it is the only one that changes the
+                            * served account *without being asked* at the moment
+                            * it acts. Sitting after the manual controls keeps a
+                            * deliberate switch the obvious first move, and the
+                            * toggle is still the very next thing on screen.
+                            *
+                            * Presence of the section is the capability signal; an
+                            * older host omits it and this block does not render.
+                            */}
+                          {status.autoSwitch === undefined ? null : (
+                            <AutoSwitchSection
+                              section={status.autoSwitch}
+                              accounts={status.accounts.accounts}
+                              busy={busy}
+                              onToggle={(enabled, threshold) => {
+                                void control({
+                                  action: 'set-auto-switch',
+                                  enabled,
+                                  ...threshold === undefined ? {} : { threshold },
+                                })
+                              }}
+                              onCheckNow={() => { void control({ action: 'auto-switch-now' }) }}
+                              t={t}
                             />
                           )}
                         </>

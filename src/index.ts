@@ -27,6 +27,8 @@ import { WorkBuddyQuotaStore, workbuddyQuotaPath } from './quota-state.ts'
 import { WorkBuddyQuotaCheckService } from './quota-check-service.ts'
 import { WorkBuddyQuotaCheckStore, workbuddyQuotaCheckPath } from './quota-check-store.ts'
 import { WorkBuddyCheckinService } from './checkin-service.ts'
+import { AUTO_SWITCH_DEFAULT_COOLDOWN_MS, AUTO_SWITCH_DEFAULT_THRESHOLD } from './auto-switch.ts'
+import { WorkBuddyAutoSwitchService } from './auto-switch-service.ts'
 import { QUOTA_CHECK_MODEL } from './quota-check.ts'
 import { createWorkBuddyAdapter } from './adapter.ts'
 import { createWorkBuddyShim } from './shim.ts'
@@ -40,7 +42,7 @@ import { createProbeKey, registerWorkBuddyProbeRoute } from './probe-route.ts'
 import { registerWorkBuddyAccountsRoute, workBuddyAccountsSection } from './accounts-route.ts'
 import type { WorkBuddyAccountStore } from './accounts-store.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
-import type { WorkBuddyWebCatalog, WorkBuddyWebCheckinSection, WorkBuddyWebProbeSection, WorkBuddyWebQuotaCheckSection } from './status-paths.ts'
+import type { WorkBuddyWebAutoSwitchSection, WorkBuddyWebCatalog, WorkBuddyWebCheckinSection, WorkBuddyWebProbeSection, WorkBuddyWebQuotaCheckSection } from './status-paths.ts'
 import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
 import { legacySettingsOf } from './legacy-settings.ts'
@@ -207,6 +209,29 @@ const CREDENTIAL_POLL_MS = 30_000
 const MIN_POLL_MS = 100
 const MAX_POLL_MS = 24 * 60 * 60 * 1000
 
+/**
+ * How often the automatic-switch balance sweep runs.
+ *
+ * Five minutes, and separate from {@link CREDENTIAL_POLL_MS} on purpose: the
+ * credential sweep asks the local credential store a question whose answer only
+ * changes when the desktop app is re-signed (30s is plenty), while a balance
+ * sweep makes one HTTP request per parked account (five minutes is plenty).
+ * Deliberately not derived from the credential interval: the override exists to
+ * speed up credential reconciliation in tests, and silently multiplying that
+ * into upstream traffic would be the wrong coupling.
+ *
+ * Overridden by `DSH_WORKBUDDY_AUTO_SWITCH_MS`, clamped to the same floor and
+ * ceiling as the other interval so a mistaken value cannot become a busy loop.
+ */
+const AUTO_SWITCH_POLL_MS = 5 * 60 * 1000
+
+/** Resolve the auto-switch interval, honoring the override when usable. */
+function autoSwitchPollMs(): number {
+  const override = Number(process.env['DSH_WORKBUDDY_AUTO_SWITCH_MS'])
+  if (!Number.isFinite(override) || override < MIN_POLL_MS) return AUTO_SWITCH_POLL_MS
+  return Math.min(override, MAX_POLL_MS)
+}
+
 /** Resolve the sweep interval, honoring the override when it is usable. */
 function credentialPollMs(): number {
   const override = Number(process.env['DSH_WORKBUDDY_POLL_MS'])
@@ -244,6 +269,23 @@ export interface Config {
   probeConsent?: boolean
   /** Use the largest context window the international catalog explicitly offers. */
   useMaximumContextWindow?: boolean
+  /**
+   * Whether to move to another parked account automatically when the served
+   * one runs low on credit.
+   *
+   * Off by default, and for a reason that is not merely conservative: this is
+   * the one setting that changes which account the user's work is billed to
+   * *without being asked*. Somebody holding two accounts deliberately (a work
+   * one and a personal one) would not want them silently mixed.
+   */
+  autoSwitchAccount?: boolean
+  /**
+   * Remaining credit at or below which the served account is abandoned.
+   *
+   * Read per sweep, so changing it applies to the next sweep rather than to the
+   * next restart. Defaults to {@link AUTO_SWITCH_DEFAULT_THRESHOLD}.
+   */
+  autoSwitchThreshold?: number
 }
 
 /** Explicit CN desktop auth-file path (shared by the plugin schema and its section). */
@@ -255,12 +297,28 @@ const PROBE_CONSENT_FIELD = z.boolean().default(false)
   .description('Authorize reasoning-effort probes (each probe sends real requests that may consume credit)')
 const MAXIMUM_CONTEXT_WINDOW_FIELD = z.boolean().default(true)
   .description('Use the largest context window declared by WorkBuddy AI when alternatives are available (on by default)')
+/**
+ * Automatic account switching, off by default.
+ *
+ * Lives in the CN section only, like `probeConsent`: it is this fork's own
+ * feature rather than an upstream one, and putting it in both sections would
+ * register a second namespace entry for a setting `merged()` collapses to one
+ * value anyway — two controls writing one field is how a UI starts lying about
+ * its own state.
+ */
+const AUTO_SWITCH_FIELD = z.boolean().default(false)
+  .description('Move to another parked account automatically when the served one runs low on credit')
+/** The remaining-credit floor for {@link AUTO_SWITCH_FIELD}, in upstream credit units. */
+const AUTO_SWITCH_THRESHOLD_FIELD = z.number().default(AUTO_SWITCH_DEFAULT_THRESHOLD)
+  .description('Switch away when the served account\'s remaining credit is at or below this value')
 
 export const Config: z<Config> = z.object({
   authFile: AUTH_FILE_FIELD,
   authFileAI: AUTH_FILE_AI_FIELD,
   probeConsent: PROBE_CONSENT_FIELD,
   useMaximumContextWindow: MAXIMUM_CONTEXT_WINDOW_FIELD,
+  autoSwitchAccount: AUTO_SWITCH_FIELD,
+  autoSwitchThreshold: AUTO_SWITCH_THRESHOLD_FIELD,
 })
 
 /**
@@ -275,6 +333,8 @@ export const Config: z<Config> = z.object({
 const CN_SECTION: z<Config> = z.object({
   authFile: AUTH_FILE_FIELD,
   probeConsent: PROBE_CONSENT_FIELD,
+  autoSwitchAccount: AUTO_SWITCH_FIELD,
+  autoSwitchThreshold: AUTO_SWITCH_THRESHOLD_FIELD,
 })
 
 /** The international card's settings section and its context-window preference. */
@@ -333,6 +393,15 @@ interface VariantRuntime {
    * capability signal the card keys its controls on.
    */
   checkinService: WorkBuddyCheckinService | undefined
+  /**
+   * Automatic switching between this variant's parked accounts.
+   *
+   * Per variant for the same reason every other per-variant store is: the two
+   * products bill against separate upstreams, so a threshold reached on one is
+   * not a reason to move the other. Undefined on a host without a slot store —
+   * with nothing parked there is nothing to switch to.
+   */
+  autoSwitchService: WorkBuddyAutoSwitchService | undefined
   /**
    * This variant's parked accounts, or undefined on a host without a slot
    * store (the credential store has none). Read per call, so a capture or
@@ -505,6 +574,32 @@ function createVariantRuntime(
         // service is bound to the region its credentials belong to.
         region: variant.id === CN_VARIANT.id ? 'cn' : 'global',
       })
+  // Automatic switching over the same slots. Built on the *billing* reader,
+  // not on the probe sender above: `fetchCredits` answers "how much is left"
+  // for any credential for free, which is what makes a scheduled sweep
+  // affordable — a sweep built on `probeEffort` would spend one real request
+  // per account every time it ran.
+  //
+  // `onChange` is bound at start time, because it needs `adoptIdentity` and
+  // therefore the running plugin's state; until then a switch still lands on
+  // disk, which is the part that must never be optional.
+  const autoSwitchService = accountStore === undefined
+    ? undefined
+    : new WorkBuddyAutoSwitchService({
+        accounts: accountStore,
+        readCredits: credential => client.fetchCredits(credential),
+        quota: quotaStore,
+        region: variant.id === CN_VARIANT.id ? 'cn' : 'global',
+        // Read per sweep, so a settings change applies without a restart.
+        enabled: () => current().autoSwitchAccount === true,
+        threshold: () => current().autoSwitchThreshold ?? AUTO_SWITCH_DEFAULT_THRESHOLD,
+        // The plugin's own logger is only available once a context is being
+        // started, and this runtime is built before that. `console.warn` is the
+        // honest fallback: a diagnostic that reaches the host log is better than
+        // one silently dropped, and every message passed here is already
+        // sanitised of token material by the service.
+        logger: { warn: (...args: unknown[]) => { console.warn(...args) } },
+      })
   return {
     variant,
     store,
@@ -520,6 +615,7 @@ function createVariantRuntime(
     quotaStore,
     quotaCheckService,
     checkinService,
+    autoSwitchService,
     account: () => accountOf(variant.id),
     fallback,
     catalogSource: 'fallback',
@@ -533,9 +629,47 @@ function createVariantRuntime(
   }
 }
 
+/**
+ * The automatic-switch section.
+ *
+ * Unlike the quota and check-in sections this one is returned even before the
+ * first sweep: the enable toggle and the threshold are configuration, and a
+ * user who has just turned the feature on needs to see that acknowledged rather
+ * than an absent section that reads as "unsupported".
+ */
+function autoSwitchSection(runtime: VariantRuntime, config: Config): WorkBuddyWebAutoSwitchSection | undefined {
+  const service = runtime.autoSwitchService
+  if (service === undefined) return undefined
+  const last = service.lastOutcome()
+  const record = service.lastSwitchRecord()
+  const decision = last?.decision
+  return {
+    enabled: config.autoSwitchAccount === true,
+    threshold: config.autoSwitchThreshold ?? AUTO_SWITCH_DEFAULT_THRESHOLD,
+    cooldownMs: AUTO_SWITCH_DEFAULT_COOLDOWN_MS,
+    running: service.isRunning(),
+    checkedAt: last?.checkedAtMs ?? 0,
+    rows: (last?.rows ?? []).map(row => ({
+      id: row.id,
+      ...row.label === undefined ? {} : { label: row.label },
+      active: row.active,
+      ...row.remaining === undefined ? {} : { remaining: row.remaining },
+      ...row.unlimited === true ? { unlimited: true } : {},
+      ...row.error === undefined ? {} : { error: row.error },
+    })),
+    // A decided-but-failed switch reports its error beside the decision, so the
+    // card can say "tried and could not" rather than "did nothing".
+    ...decision?.action === 'switch' ? { moveReason: decision.reason } : {},
+    ...decision?.action === 'stay' ? { stayReason: decision.reason } : {},
+    ...last?.switched === true && last.decision.action === 'switch' ? { movedTo: last.decision.targetId } : {},
+    ...record === undefined ? {} : { movedFrom: record.fromId, lastSwitchAt: record.atMs },
+    ...last?.switchError === undefined ? {} : { switchError: last.switchError },
+    switchCount: service.totalSwitches(),
+  }
+}
+
 /** The catalog provenance the card displays. */
-function catalogSection(runtime: VariantRuntime): WorkBuddyWebCatalog {
-  const fetch = runtime.client.lastCatalog
+function catalogSection(runtime: VariantRuntime): WorkBuddyWebCatalog {  const fetch = runtime.client.lastCatalog
   return {
     // The source is what the models on screen actually came from, so the card
     // can distinguish a fresh fetch from a saved one from the built-in roster —
@@ -673,6 +807,21 @@ async function startVariant(ctx: Context, runtime: VariantRuntime): Promise<bool
     // concrete alternative rather than only describing the workflow.
     quota: runtime.quotaStore,
     ...runtime.accountStore === undefined ? {} : { accounts: runtime.accountStore },
+    // The second trigger. The balance sweep runs on a timer and can be minutes
+    // stale; a `hard_credit` answer is the earliest honest evidence that this
+    // account cannot serve, so it is acted on immediately rather than waiting
+    // for the next sweep. Fire-and-forget: the refusal below is what the user
+    // is blocked on, and a switch landing just after it still fixes every later
+    // request.
+    ...runtime.autoSwitchService === undefined ? {} : {
+      onCreditRefusal: (account: string | undefined) => {
+        void runtime.autoSwitchService?.onRefusal(account).catch(() => {
+          // `onRefusal` already absorbs its own failures; this guard exists so a
+          // future edit cannot start producing unhandled rejections on the chat
+          // path, where nothing would ever observe them.
+        })
+      },
+    },
   })
   try {
     await shim.ready
@@ -837,6 +986,15 @@ export function apply(ctx: Context, config: Config): void {
   }
   let setMaximumContextWindow: ((enabled: boolean) => Promise<{ state: string; reason?: string }>) | undefined
   /**
+   * Persists the automatic-switch preference, installed with the settings
+   * sections below. Undefined while no settings service exists, in which case
+   * the card's toggle reports "settings are unavailable" rather than silently
+   * accepting a click that would not survive a restart.
+   */
+  let setAutoSwitchPreference: (enabled: boolean, threshold?: number) => Promise<void> = async () => {
+    throw new Error('settings are unavailable')
+  }
+  /**
    * Whether this host's settings service carries the 0.1.2-era section API.
    * Decided once, inside the `settings` inject: DSH 0.1.7 removed
    * `installSection` (and `update`) with no replacement this plugin can drive.
@@ -966,6 +1124,10 @@ export function apply(ctx: Context, config: Config): void {
         // card on a slotless host renders no button rather than one that can
         // only answer "not supported".
         ...runtime.checkinService === undefined ? {} : { checkin: () => checkinSection(runtime) },
+        // Automatic switching: same capability-signal rule, but the section is
+        // present even before a sweep because it carries the enable toggle and
+        // the threshold. A slotless host omits the getter entirely.
+        ...runtime.autoSwitchService === undefined ? {} : { autoSwitch: () => autoSwitchSection(runtime, current()) },
         ...runtime.variant.id === CN_VARIANT.id ? {} : {
           // Presence of this field in the document is the card's capability
           // signal, so the getter answers `undefined` — not merely `false` —
@@ -1075,7 +1237,55 @@ export function apply(ctx: Context, config: Config): void {
             return { state: 'checked', reason: `${claimed} claimed, ${failed} failed of ${sweep.rows.length}` }
           },
         },
+        // Automatic switching: the preference write and a manual sweep. Both are
+        // guarded by this route's key for the same reason the accounts route is
+        // — either one can change which account pays for the next request.
+        ...runtime.autoSwitchService === undefined ? {} : {
+          setAutoSwitch: async (enabled: boolean, threshold?: number) => {
+            if (stopped) return { state: 'failed', reason: 'plugin is stopping' }
+            try {
+              await setAutoSwitchPreference(enabled, threshold)
+            } catch (error: unknown) {
+              // A preference that did not persist must not read as saved.
+              return { state: 'failed', reason: error instanceof Error ? error.message.slice(0, 300) : String(error) }
+            }
+            return { state: 'updated' }
+          },
+          autoSwitchNow: async () => {
+            if (stopped) return { state: 'failed', reason: 'plugin is stopping' }
+            const sweep = await runtime.autoSwitchService!.sweep()
+            const moved = sweep.switched
+            // The sweep always completes; `state` only distinguishes "ran" from
+            // "could not run", and the rows carry the verdict either way.
+            return {
+              state: 'checked',
+              reason: moved
+                ? `switched (${sweep.decision.action === 'switch' ? sweep.decision.reason : 'unknown'})`
+                : `stayed (${sweep.decision.action === 'stay' ? sweep.decision.reason : 'unknown'})`,
+            }
+          },
+        },
       }, probeKey)
+      // The same re-resolution the accounts route performs, installed on the
+      // automatic-switcher: a switch it performs must make the catalog,
+      // visibility rules and picker follow the new account immediately, exactly
+      // as a manual switch does. Sharing this body is what keeps the two paths
+      // from drifting.
+      const afterAccountChange = async (): Promise<void> => {
+        try {
+          const credential = await runtime.store.current()
+          if (credential === undefined) {
+            adoptIdentity(runtime, undefined, undefined)
+            return
+          }
+          adoptIdentity(runtime, credentialIdentity(credential), visibilityAccountOf(credential))
+        } catch (error: unknown) {
+          // A refused credential (region mismatch) is reported by the next
+          // status read; it must not escape the route's response.
+          ctx.logger.warn(`dsh-workbuddy-connect: account change could not be applied: ${String(error)}`)
+        }
+      }
+      runtime.autoSwitchService?.setOnChange(afterAccountChange)
       // The switching write route. Guarded by the same in-process key as probe
       // control: a switch decides which account every later request is billed
       // to, so it is not left to the read-only status route's loopback gate.
@@ -1086,20 +1296,7 @@ export function apply(ctx: Context, config: Config): void {
         // A capture or switch changes which account is served, so the catalog,
         // visibility section and picker must re-resolve exactly as they do for
         // a sign-in the sweep noticed.
-        onChange: async () => {
-          try {
-            const credential = await runtime.store.current()
-            if (credential === undefined) {
-              adoptIdentity(runtime, undefined, undefined)
-              return
-            }
-            adoptIdentity(runtime, credentialIdentity(credential), visibilityAccountOf(credential))
-          } catch (error: unknown) {
-            // A refused credential (region mismatch) is reported by the next
-            // status read; it must not escape the route's response.
-            ctx.logger.warn(`dsh-workbuddy-connect: account change could not be applied: ${String(error)}`)
-          }
-        },
+        onChange: afterAccountChange,
         key: probeKey,
       })
     }
@@ -1161,6 +1358,11 @@ export function apply(ctx: Context, config: Config): void {
       ...sources.cn().probeConsent === undefined ? {} : { probeConsent: sources.cn().probeConsent },
       ...sources.ai().authFileAI === undefined ? {} : { authFileAI: sources.ai().authFileAI },
       ...sources.ai().useMaximumContextWindow === undefined ? {} : { useMaximumContextWindow: sources.ai().useMaximumContextWindow },
+      // Auto-switch is edited from the CN section only, but `merged()` is what
+      // every variant reads — so an international card shows the same values
+      // the CN card wrote, rather than a second copy that could drift.
+      ...sources.cn().autoSwitchAccount === undefined ? {} : { autoSwitchAccount: sources.cn().autoSwitchAccount },
+      ...sources.cn().autoSwitchThreshold === undefined ? {} : { autoSwitchThreshold: sources.cn().autoSwitchThreshold },
     })
     const applyMaximumContextWindow = (next: Config): void => {
       const runtime = runtimes.find(candidate => candidate.variant.id !== CN_VARIANT.id)
@@ -1189,6 +1391,15 @@ export function apply(ctx: Context, config: Config): void {
     setMaximumContextWindow = async enabled => {
       await legacy.update(WORKBUDDY_AI_SETTINGS_NS, { useMaximumContextWindow: enabled })
       return { state: 'updated' }
+    }
+    // Both fields live in the CN section, so one update carries them. The
+    // threshold is sent only when the caller named one: omitting it must leave
+    // the stored value alone rather than resetting it to the default.
+    setAutoSwitchPreference = async (enabled, threshold) => {
+      await legacy.update(WORKBUDDY_SETTINGS_NS, {
+        autoSwitchAccount: enabled,
+        ...threshold === undefined ? {} : { autoSwitchThreshold: threshold },
+      })
     }
   })
 
@@ -1347,6 +1558,44 @@ export function apply(ctx: Context, config: Config): void {
     for (const runtime of runtimes) await syncVariant(runtime)
   }
 
+  /**
+   * Run one automatic-switch sweep per variant.
+   *
+   * Deliberately separate from {@link syncAll} rather than folded into it. The
+   * two answer different questions and fail differently: `syncVariant` reconciles
+   * which account the *desktop app* is signed into, while this may itself change
+   * the served account — and a switch performed here must be followed by a
+   * reconcile, not run concurrently with one. Running them in sequence means the
+   * reconcile always sees the account the switch just selected.
+   *
+   * Cheap when the feature is off: the service reads its own `enabled` flag per
+   * sweep and returns without touching the network, so a disabled plugin costs
+   * one boolean check rather than one billing read per account.
+   */
+  const autoSwitchAll = async (): Promise<void> => {
+    if (stopped) return
+    for (const runtime of runtimes) {
+      const service = runtime.autoSwitchService
+      if (service === undefined) continue
+      try {
+        const sweep = await service.sweep()
+        if (!sweep.switched) continue
+        ctx.logger.info(
+          `dsh-workbuddy-connect: ${runtime.variant.displayName} auto-switch moved accounts`
+          + ` (${sweep.decision.action === 'switch' ? sweep.decision.reason : 'unknown'})`,
+        )
+        // The served account changed underneath the plugin: re-resolve it so the
+        // model list, visibility rules and picker all follow the new account
+        // immediately rather than at the next reconcile.
+        await syncVariant(runtime)
+      } catch (error: unknown) {
+        // One variant's failure must not stop the other's, and nothing here may
+        // escape into the interval callback.
+        ctx.logger.warn(`dsh-workbuddy-connect: ${runtime.variant.displayName} auto-switch sweep failed`, error)
+      }
+    }
+  }
+
   void Promise.all(runtimes.map(async runtime => startVariant(ctx, runtime))).then(() => {
     if (stopped) return
     // The host bundle is live: write a heartbeat so the status CLI can report
@@ -1360,5 +1609,21 @@ export function apply(ctx: Context, config: Config): void {
     const timer = setInterval(() => { void syncAll() }, credentialPollMs())
     timer.unref?.()
     timers.push(timer)
+    /**
+     * The balance sweep runs on its own, longer cadence.
+     *
+     * Reusing the credential poll's 30s would mean one billing read per parked
+     * account every half minute — free at the upstream, but pointless: credit
+     * does not drain that fast relative to a 49-credit floor, and each sweep is
+     * a burst of HTTP requests. A few minutes is frequent enough to catch a
+     * half-spent account before it empties, and rare enough to stay invisible.
+     *
+     * The first sweep is delayed by one interval rather than run at start: on a
+     * cold start the credential store is still resolving, and a sweep that
+     * fires before the first reconcile would read the slots twice for nothing.
+     */
+    const autoSwitchTimer = setInterval(() => { void autoSwitchAll() }, autoSwitchPollMs())
+    autoSwitchTimer.unref?.()
+    timers.push(autoSwitchTimer)
   })
 }

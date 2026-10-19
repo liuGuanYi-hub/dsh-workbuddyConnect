@@ -284,3 +284,109 @@ describe('probe control route: checkin', () => {
     expect(received).toEqual([])
   })
 })
+
+/**
+ * The automatic-switch actions.
+ *
+ * Both change which account pays for the next request, so they carry the same
+ * key and loopback guards as every other write on this route. The threshold
+ * parsing gets its own cases because a rejected value is the difference between
+ * "switch early" and "switch on every sweep forever".
+ */
+describe('probe control route: automatic switching', () => {
+  it('persists the toggle and the threshold', async () => {
+    const seen: { enabled: boolean, threshold?: number }[] = []
+    const { origin, key } = await mount({
+      setAutoSwitch: async (enabled, threshold) => {
+        seen.push({ enabled, ...threshold === undefined ? {} : { threshold } })
+        return { state: 'updated' }
+      },
+    })
+    const result = await post(
+      origin,
+      { action: 'set-auto-switch', enabled: true, threshold: 49 },
+      { 'X-WorkBuddy-Probe-Key': key },
+    )
+    expect(result).toMatchObject({ status: 200, body: { state: 'updated' } })
+    expect(seen).toEqual([{ enabled: true, threshold: 49 }])
+  })
+
+  it('accepts a toggle with no threshold, so flipping it does not reset the value', async () => {
+    const seen: { enabled: boolean, threshold?: number }[] = []
+    const { origin, key } = await mount({
+      setAutoSwitch: async (enabled, threshold) => {
+        seen.push({ enabled, ...threshold === undefined ? {} : { threshold } })
+        return { state: 'updated' }
+      },
+    })
+    await post(origin, { action: 'set-auto-switch', enabled: false }, { 'X-WorkBuddy-Probe-Key': key })
+    expect(seen).toEqual([{ enabled: false }])
+  })
+
+  it('refuses an unusable threshold instead of clamping it', async () => {
+    // "Switch always" (a negative floor) is never something a user meant to ask
+    // for, and clamping it would hide that they asked for it.
+    let called = 0
+    const { origin, key } = await mount({
+      setAutoSwitch: async () => {
+        called += 1
+        return { state: 'updated' }
+      },
+    })
+    // A browser can send a negative number (meaning "always switch", which no
+    // user intends) and a non-number. Both must be refused rather than
+    // coerced, because a clamped value would hide that they asked for it.
+    for (const threshold of [-1, 'many']) {
+      const result = await post(
+        origin,
+        { action: 'set-auto-switch', enabled: true, threshold },
+        { 'X-WorkBuddy-Probe-Key': key },
+      )
+      expect(result.status).toBe(400)
+    }
+    expect(called).toBe(0)
+  })
+
+  it('requires the enabled flag to be a real boolean', async () => {
+    const { origin, key } = await mount({ setAutoSwitch: async () => ({ state: 'updated' }) })
+    for (const enabled of ['true', 1, null]) {
+      const result = await post(
+        origin,
+        { action: 'set-auto-switch', enabled },
+        { 'X-WorkBuddy-Probe-Key': key },
+      )
+      expect(result.status).toBe(400)
+    }
+  })
+
+  it('runs a manual sweep and answers with what it decided', async () => {
+    let calls = 0
+    const { origin, key } = await mount({
+      autoSwitchNow: async () => {
+        calls += 1
+        return { state: 'checked', reason: 'stayed (active-above-threshold)' }
+      },
+    })
+    const result = await post(origin, { action: 'auto-switch-now' }, { 'X-WorkBuddy-Probe-Key': key })
+    expect(result).toMatchObject({ status: 200, body: { state: 'checked' } })
+    expect(calls).toBe(1)
+  })
+
+  it('refuses both actions with no key, and with a wrong one', async () => {
+    const { origin } = await mount({
+      setAutoSwitch: async () => ({ state: 'updated' }),
+      autoSwitchNow: async () => ({ state: 'checked' }),
+    })
+    expect((await post(origin, { action: 'auto-switch-now' })).status).toBe(403)
+    expect((await post(origin, { action: 'auto-switch-now' }, { 'X-WorkBuddy-Probe-Key': 'nope' })).status).toBe(403)
+    expect((await post(origin, { action: 'set-auto-switch', enabled: true })).status).toBe(403)
+  })
+
+  it('says so when the host cannot auto-switch', async () => {
+    const { origin, key } = await mount()
+    expect((await post(origin, { action: 'auto-switch-now' }, { 'X-WorkBuddy-Probe-Key': key })))
+      .toMatchObject({ status: 404, body: { error: 'auto-switch-not-supported' } })
+    expect((await post(origin, { action: 'set-auto-switch', enabled: true }, { 'X-WorkBuddy-Probe-Key': key })))
+      .toMatchObject({ status: 404, body: { error: 'auto-switch-not-supported' } })
+  })
+})

@@ -15,7 +15,7 @@ import { normalizeCredits } from './upstream.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
 import { WORKBUDDY_STATUS_PATH } from './status-paths.ts'
-import type { WorkBuddyWebCatalog, WorkBuddyWebModelBadge, WorkBuddyWebAccountsSection, WorkBuddyWebCheckinSection, WorkBuddyWebProbeSection, WorkBuddyWebQuotaCheckSection, WorkBuddyWebStatus, WorkBuddyWebVisibilitySection } from './status-paths.ts'
+import type { WorkBuddyWebAutoSwitchSection, WorkBuddyWebCatalog, WorkBuddyWebModelBadge, WorkBuddyWebAccountsSection, WorkBuddyWebCheckinSection, WorkBuddyWebProbeSection, WorkBuddyWebQuotaCheckSection, WorkBuddyWebStatus, WorkBuddyWebVisibilitySection } from './status-paths.ts'
 
 export { WORKBUDDY_STATUS_PATH } from './status-paths.ts'
 export type { WorkBuddyWebStatus } from './status-paths.ts'
@@ -80,6 +80,16 @@ export interface WorkBuddyStatusRouteOptions {
    * button, and the getter answers `undefined` until a sweep has run.
    */
   checkin?: () => WorkBuddyWebCheckinSection | undefined
+  /**
+   * The automatic-switch capability and its last sweep.
+   *
+   * Absent when the host has no parked accounts, which is the card's signal
+   * that there is nothing to switch between. Unlike `checkin` the getter
+   * answers a section even before the first sweep: the enable toggle and the
+   * threshold are configuration the user has to be able to see and change, and
+   * hiding them until a sweep has run would make the feature unreachable.
+   */
+  autoSwitch?: () => WorkBuddyWebAutoSwitchSection | undefined
   /**
    * Route path to mount. Defaults to the CN variant's path so existing callers
    * and tests keep their behaviour; the international variant passes its own.
@@ -234,11 +244,24 @@ export async function workBuddyWebStatus(
   // The check-in sweep rides beside the account rows for the same reason: it is
   // about those parked accounts, and its rows are keyed by the same slot ids.
   const checkin = deps.checkin?.()
+  // Automatic switching rides here too. Resolved through the same defensive
+  // path as the others: a section getter that throws must not cost the document
+  // the balance the card is primarily there to show.
+  let autoSwitch: WorkBuddyWebAutoSwitchSection | undefined
+  if (deps.autoSwitch !== undefined) {
+    try {
+      autoSwitch = deps.autoSwitch()
+    } catch {
+      // The feature stays unavailable for this read; the next document retries.
+      autoSwitch = undefined
+    }
+  }
   const withQuotaCheck: WorkBuddyWebStatus = {
     ...withAccounts,
     ...deps.quotaCheckModel === undefined ? {} : { quotaCheckModel: deps.quotaCheckModel },
     ...quotaCheck === undefined ? {} : { quotaCheck },
     ...checkin === undefined ? {} : { checkin },
+    ...autoSwitch === undefined ? {} : { autoSwitch },
   }
   try {
     const credential = await deps.store.current()

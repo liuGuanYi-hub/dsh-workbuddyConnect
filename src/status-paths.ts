@@ -201,6 +201,70 @@ export interface WorkBuddyWebCheckinSection {
   rows: readonly WorkBuddyWebCheckinRow[]
 }
 
+/** One account's balance row in the automatic-switch section. */
+export interface WorkBuddyWebAutoSwitchRow {
+  /** Slot id. */
+  id: string
+  label?: string
+  /** Whether this is the account currently being served. */
+  active: boolean
+  /**
+   * Remaining credit, when the billing read succeeded.
+   *
+   * Absent when `error` is set, and absent for an `unlimited` account — the
+   * upstream's "no cap" is a sentinel, not a number, and rendering it as one
+   * would be a wrong number rather than a visible absence.
+   */
+  remaining?: number
+  /** The account's cycle quota is uncapped. */
+  unlimited?: boolean
+  /** Why this account's balance could not be read. */
+  error?: string
+}
+
+/**
+ * The automatic-switch section of the status document.
+ *
+ * Present whenever the feature is wired at all, unlike the quota-check section:
+ * the *decision* it last reached is useful even while the feature is off (it
+ * shows what would have happened), and the card needs somewhere to render the
+ * threshold and the enable/disable control. `enabled` is what distinguishes
+ * "configured but idle" from "actively moving accounts".
+ */
+export interface WorkBuddyWebAutoSwitchSection {
+  /** Whether automatic switching is on. */
+  enabled: boolean
+  /** Remaining credit at or below which the served account is abandoned. */
+  threshold: number
+  /** Shortest interval between two balance-driven switches, milliseconds. */
+  cooldownMs: number
+  /** Whether a sweep is in flight right now. */
+  running: boolean
+  /** When the last sweep finished, epoch milliseconds; 0 if never. */
+  checkedAt: number
+  /** One row per parked account, in slot order. */
+  rows: readonly WorkBuddyWebAutoSwitchRow[]
+  /**
+   * Why the last sweep did not switch.
+   *
+   * A closed vocabulary rather than a sentence so the card can localise it and
+   * tests can branch on it; the host never sends prose the browser has to match.
+   */
+  stayReason?: string
+  /** Why the last sweep switched, when it did. */
+  moveReason?: string
+  /** The account the last sweep switched to, when it switched. */
+  movedTo?: string
+  /** The account the last sweep switched away from, when it switched. */
+  movedFrom?: string
+  /** Why a decided switch could not be carried out. */
+  switchError?: string
+  /** When the most recent automatic switch happened, epoch milliseconds. */
+  lastSwitchAt?: number
+  /** How many automatic switches this process has performed. */
+  switchCount: number
+}
+
 /** Action requested from the probe control route. */
 export interface WorkBuddyProbeAction {
   /**
@@ -213,13 +277,15 @@ export interface WorkBuddyProbeAction {
    * parked account's daily check-in state and claims whatever reward is still
    * unclaimed.
    *
-   * All seven are writes, which is why they share this route's in-process key
-   * and loopback guards rather than the read-only status GET. `check-quota`
-   * and `checkin` earn their place here for the same reason as `probe`: each
-   * spends a real upstream request per parked account, and `checkin` also
-   * performs a state-changing claim.
+   * All nine are writes, which is why they share this route's in-process key
+   * and loopback guard rather than the read-only status GET. `check-quota` and
+   * `checkin` earn their place here for the same reason as `probe`: each spends
+   * a real upstream request per parked account, and `checkin` also performs a
+   * state-changing claim. `set-auto-switch` and `auto-switch-now` are here
+   * because both decide which account every later request is billed to — the
+   * same authority the accounts route guards, for the same reason.
    */
-  action: 'probe' | 'clear' | 'refresh' | 'set-maximum-context-window' | 'set-model-visibility' | 'check-quota' | 'checkin'
+  action: 'probe' | 'clear' | 'refresh' | 'set-maximum-context-window' | 'set-model-visibility' | 'check-quota' | 'checkin' | 'set-auto-switch' | 'auto-switch-now'
   /**
    * Target model id; required for `probe` and `set-model-visibility`.
    *
@@ -227,8 +293,17 @@ export interface WorkBuddyProbeAction {
    * serves by default (see `QUOTA_CHECK_MODEL`), which is what the card sends.
    */
   model?: string
-  /** Requested value for `set-maximum-context-window` and `set-model-visibility`. */
+  /** Requested value for `set-maximum-context-window`, `set-model-visibility` and `set-auto-switch`. */
   enabled?: boolean
+  /**
+   * Requested remaining-credit floor for `set-auto-switch`.
+   *
+   * Optional so a toggle can flip the feature without restating the threshold;
+   * a value that is present but unusable (negative, non-finite) is refused by
+   * the route rather than clamped, because "switch always" is never something a
+   * user meant to ask for.
+   */
+  threshold?: number
   /** Requested picker visibility for `set-model-visibility`. */
   visible?: boolean
   /**
@@ -476,6 +551,17 @@ export type WorkBuddyWebStatus =
      * it at all".
      */
     checkin?: WorkBuddyWebCheckinSection
+    /**
+     * Automatic account switching.
+     *
+     * Presence is the card's capability signal: a host without a slot store has
+     * nothing to switch between and omits the section, so the card renders no
+     * control rather than one that can only be refused. Unlike `checkin`, the
+     * section appears even before the first sweep — the enable toggle and the
+     * threshold are configuration, and a user who has just switched the feature
+     * on needs to see it acknowledged.
+     */
+    autoSwitch?: WorkBuddyWebAutoSwitchSection
     /**
      * In-process key authorizing probe control writes. Handed to the card with
      * the status document (the card is same-origin and already had to pass the
