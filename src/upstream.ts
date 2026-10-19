@@ -503,8 +503,16 @@ function refreshHeaders(credential: WorkBuddyCredential): Record<string, string>
   return headers
 }
 
-/** Billing request headers. */
-function billingHeaders(credential: WorkBuddyCredential): Record<string, string> {
+/**
+ * Billing request headers.
+ *
+ * Exported because the check-in path (module `dsh-workbuddy-connect/checkin`)
+ * must present byte-identical account identity: the gateway splits accounts by
+ * the `X-User-Id` / `X-Enterprise-Id` pair, so a check-in that built its own
+ * headers could claim the reward for a different account than the one the user
+ * selected. Sharing the builder is what makes that impossible to drift.
+ */
+export function workbuddyBillingHeaders(credential: WorkBuddyCredential): Record<string, string> {
   const headers: Record<string, string> = {
     'Authorization': `Bearer ${credential.accessToken}`,
     'Accept': 'application/json',
@@ -518,6 +526,8 @@ function billingHeaders(credential: WorkBuddyCredential): Record<string, string>
   if (credential.domain !== '') headers['X-Domain'] = credential.domain
   return headers
 }
+
+const billingHeaders = workbuddyBillingHeaders
 
 /**
  * Account-identity headers for the CN catalog requests (`/v3/config` and the
