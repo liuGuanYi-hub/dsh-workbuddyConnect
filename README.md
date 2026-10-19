@@ -13,7 +13,7 @@
 ```text
 请帮我安装并验证 DSH（DeepSeek Harness）插件 dsh-workbuddy-connect（项目地址：https://github.com/corrinehu/dsh-workbuddy-connect）：
 先阅读项目 README，确认我实际使用的界面（Web / Desktop / TUI）与 DSH 内核版本，桌面版以 App 内置核心为准，不要用独立 CLI 的版本代替；
-再按版本对应关系选择插件版本（0.2.1-rc.1→0.7.7-fork.1、0.2.0-rc.2→0.7.6、rc.1→0.7.0、0.1.5–0.1.7→0.6.5），优先走本机受支持的非插件市场渠道；0.2.1-rc.1 内核只有本 fork 的构建可用，来源是本机 tarball 而不是 npm；部分 Desktop 发行版（尤其官方 Electron 版）的 profile 由 App 管理，各发行版规则未必相同，先确认我所用的发行版，再探查其合规的安装方式，但不得绕过其校验；
+再按版本对应关系选择插件版本（0.2.1-rc.2 / rc.1→0.7.8-fork.2、0.2.0-rc.2→0.7.6、rc.1→0.7.0、0.1.5–0.1.7→0.6.5），优先走本机受支持的非插件市场渠道；0.2.1-rc.1 / rc.2 内核只有本 fork 的构建可用，来源是本机 tarball 而不是 npm；部分 Desktop 发行版（尤其官方 Electron 版）的 profile 由 App 管理，各发行版规则未必相同，先确认我所用的发行版，再探查其合规的安装方式，但不得绕过其校验；
 任何本地文件或配置改动，先征得我同意并做好备份；
 装完后验证模型选择器里出现 WorkBuddy 分组，并陪我完成一次简短对话；
 若 Desktop 安装仍因 generation 校验失败（如 @types/retry 误报），请如实报告、参照上游 dataelement/dsh-desktop#688，并建议我改用独立的 Web / TUI，不要修改依赖包或绕过校验。
@@ -23,7 +23,7 @@
 
 | DSH 内核 | 推荐插件版 |
 |---|---|
-| 0.2.1-rc.1 | **0.7.7-fork.1**（本 fork 的本地构建，见「版本兼容与历史版本」） |
+| 0.2.1-rc.2 / rc.1 | **0.7.8-fork.2**（本 fork 的本地构建，见「版本兼容与历史版本」） |
 | 0.2.0-rc.2 | 0.7.6（npm latest） |
 | 0.2.0-rc.1 | 0.7.0 |
 | 0.1.5 – 0.1.7 | 0.6.5 |
@@ -134,16 +134,17 @@ dsh plugin --profile web exec dsh-workbuddy-connect doctor --provider workbuddy-
 
 | DSH 内核 | 推荐插件版 | 注意事项 |
 |---|---|---|
-| `0.2.1-rc.1` | `0.7.7-fork.1`（本 fork） | 本仓库的 fork 构建：上游 0.7.6 的全部功能 + 多账号/重命名/额度检测，依赖改为 DSH 0.2.1-rc.1 一代（`@deepseek-ai/dsh-*` 0.2.1-rc.1、`@earendil-works/pi-ai` 1.3.0）。上游尚未发布对应版本，升级 DSH 到 0.2.1 后必须用这一版，否则插件面板会报「与 DSH 0.2.1-rc.1 不兼容」。 |
-| `0.2.0-rc.2` | `0.7.6`（npm latest） | 修复企业账号模型目录缺项与国际版对话被渠道校验拦截，勿停留在有注册表回归的 0.7.2。 |
-| `0.2.0-rc.1` | `0.7.0` | 0.7.1 起不再支持 rc.1，请停留本版。 |
+| `0.2.1-rc.2` | `0.7.8-fork.2`（本 fork） | 本仓库的 fork 构建：上游 0.7.8 的全部功能 + 多账号/重命名/额度检测/自动切换账号，依赖用 caret 放宽到 `^0.2.1-rc.1`（同时兼容 rc.1 与 rc.2）。上游 0.7.8 把 peer 精确钉在 `0.2.1-rc.2`，换一个 rc 就会判不兼容，所以本 fork 继续用放宽写法。 |
+| `0.2.1-rc.1` | `0.7.8-fork.2`（本 fork） | 同上，同一构建同时兼容 rc.1 与 rc.2。 |
+| `0.2.0-rc.2` | `0.7.6`（npm） | 修复企业账号模型目录缺项与国际版对话被渠道校验拦截，勿停留在有注册表回归的 0.7.2。 |
 | `0.1.5` – `0.1.7` | `0.6.5` | 旧内核最终版；0.7.0 起仅面向 0.2.0。 |
 | `0.1.2-rc.1` | `0.3.1` | 更早旧线，仅历史维护。 |
 | `0.1.1-rc.2` | `0.2.6` | 更早旧线，仅历史维护。 |
 
 历次更新（完整记录见 [releases](https://github.com/corrinehu/dsh-workbuddy-connect/releases)）：
 
-- **0.7.7-fork.1**（本 fork）：适配 DSH 0.2.1-rc.1。DSH 0.2.1 把 `@deepseek-ai/dsh-*` 升到 0.2.1-rc.1、`@earendil-works/pi-ai` 升到 1.x，上游 0.7.6 的 peer 仍写死 0.2.0-rc.2，因此被插件面板判为不兼容。本版把七个 DSH 服务 peer 改为 `^0.2.1-rc.1`、pi-ai 固定为 1.3.0，重跑类型检查与 988 项测试后重新构建；多账号、卡片内重命名、额度检测等 fork 功能原样保留。
+- **0.7.8-fork.2**（本 fork）：合入上游 0.7.8 并保留全部 fork 功能。上游改动：CN 目录刷新到 2026-10-17 的 19 个模型（新增 `step-5-preview`、`space-bunny`、`glm-5.3-flashx`，`minimax-m3`→`minimax-m3-pay`，`kimi-k3-1`→`kimi-k3-2`）、`glm-5.1`/`glm-5.2` 修正为不支持图片、新增「同名模型按 id 尾自动区分」（`hy3`/`hy3-x` 不再同名）、探测卡展示目录声明的档位、同义徽章去重（`独家限免`/`夜间免费` 不再叠加「免费」）。fork 保留：多账号切换与重命名、额度检测与用尽提示、每日签到、自动切换账号、卡片中英文案。
+- **0.7.8**（上游）：CN 模型目录更新至 2026-10-17；`disambiguateDisplayNames` 修复同名模型；探测卡显示目录声明档位；徽章去重。
 - **0.7.6**：修复企业账号模型目录缺少 `glm-5.3-flashx`（[#123](https://github.com/corrinehu/dsh-workbuddy-connect/issues/123)），修复国际版对话请求被上游渠道校验拦截（[#139](https://github.com/corrinehu/dsh-workbuddy-connect/issues/139) / [#142](https://github.com/corrinehu/dsh-workbuddy-connect/issues/142)）。
 - **0.7.5**：修复切换会话后输入框余额与刷新按钮消失（[#125](https://github.com/corrinehu/dsh-workbuddy-connect/issues/125) / [#132](https://github.com/corrinehu/dsh-workbuddy-connect/issues/132)），修复 WSL 调用 Windows 凭据解密程序的环境转发（[#133](https://github.com/corrinehu/dsh-workbuddy-connect/issues/133)），README 收录社区项目（[#130](https://github.com/corrinehu/dsh-workbuddy-connect/issues/130)）。
 - **0.7.4**：Windows 诊断与稳定性改进：注册表子进程输出超限准确分类、跨平台测试假设修正（[#62](https://github.com/corrinehu/dsh-workbuddy-connect/issues/62)），安装说明重排。

@@ -1310,12 +1310,12 @@ declare class WorkBuddyCredentialStore {
 type WorkBuddyModelInfo = WorkBuddyUpstreamModel;
 /**
  * Static CLI models observed on the CN endpoint (re-verified against the live
- * `/v3/config` document 2026-09-23, including the thinking-effort and billing
+ * `/v3/config` document 2026-10-17, including the thinking-effort and billing
  * metadata). The upstream refresh replaces this list at startup; it exists so
  * the provider registers with a usable catalog even while the first fetch is
  * in flight or offline.
  *
- * The list tracks the `cli` agent's model roster exactly — the 16 models it
+ * The list tracks the `cli` agent's model roster exactly — the 19 models it
  * offered that day. The roster churns quickly (`auto`, `kimi-k3-1`,
  * `minimax-m3` each appeared or vanished within days, and a competing patch's
  * 2026-09-22 snapshot named three ids that were gone a day later), so this
@@ -1325,6 +1325,11 @@ type WorkBuddyModelInfo = WorkBuddyUpstreamModel;
  * cannot drift apart silently. Reasoning metadata is verbatim from the live
  * document, and the `free` flag follows the normalized `x0.00` credits
  * marker.
+ *
+ * Image capability is also verbatim, and it moved since the previous capture:
+ * `glm-5.2` and `glm-5.1` now report `supportsImages: false`. Claiming it for
+ * them admitted an attachment the upstream then rejected after the message was
+ * durable, so this table follows the document rather than the old snapshot.
  *
  * Deliberately NOT baked in: promotional badges. `限时免费` and friends are
  * dynamic console-side promotions with no reliable validity window, so a
