@@ -77,7 +77,15 @@ The same UI works unchanged inside the DSH 0.1.5 settings cards:
 
 - **Enterprise credit**: on the CN product, enterprise accounts (non-empty `enterpriseId`) read their cycle quota from the enterprise billing endpoint, and the card shows the enterprise quota with the cycle reset time.
 
-- **Quota check**: the card's account section parks several desktop-app sign-ins and switches between them, and its **Check quota** button sends one minimal request per parked account (`max_tokens: 1`, disconnecting at the first streamed event) to answer "can this account still serve DeepSeek-V4.1-Flash right now": quota available / quota used up / could not decide. A check spends a little credit, so it runs only after you press it and confirm — never automatically. Results are stored with their check time under `$DSH_HOME`, so both the card and `accounts quota` still read them after a restart. "Could not decide" is not "used up": a dead session, a rate limit and a transport failure all land there, and their usual fix is to sign in again rather than switch accounts.
+- **Multi-account switching**: the card's account section parks several desktop-app sign-ins, each row offering **Rename / Switch to this account / Remove**. After a switch the next request goes through the new account — no sign-out of the desktop app and no DSH restart. `in use` marks the account currently being served, and other rows carry status markers such as "quota used up". **Capture current sign-in** stores whichever account the desktop app is signed into right now, so the workflow is: sign into another account in the app, capture it, then switch back and forth from the card. Slot ids derive stably from the account uid, so capturing the same account again updates it in place instead of growing a duplicate; slots hold only a credential copy plus a pointer (`active.json`), and the plugin never writes the desktop app's own credential file.
+
+![Multi-account switching and quota check in the plugin card](assets/8.png)
+
+- **Quota check**: the **Check quota** button in that same section sends one minimal request per parked account (`max_tokens: 1`, disconnecting at the first streamed event) to answer "can this account still serve DeepSeek-V4.1-Flash right now": quota available / quota used up / could not decide. A check spends a little credit, so it runs only after you press it and confirm — never automatically. Results are stored with their check time under `$DSH_HOME`, so both the card and `accounts quota` still read them after a restart. "Could not decide" is not "used up": a dead session, a rate limit and a transport failure all land there, and their usual fix is to sign in again rather than switch accounts.
+
+![The quota check keeps rate limiting separate from a spent account](assets/9.png)
+
+The capture above is the international card in practice: two accounts got `429 usage exceeds frequency limit` (the upstream states it resets a few hours later) and are reported as "could not decide" rather than "quota used up" — whether to switch is your call, and the plugin will not dress a rate limit up as a debt.
 
 - **Rate**: every model name carries its credits multiplier (e.g. `GLM-5.2 · x0.79`, `Hy3 · x0.00`) in both the `/model` popup and the composer's model dropdown; the rate is display-only and never affects requests.
 
