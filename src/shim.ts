@@ -24,7 +24,7 @@ import { hostIsLoopback, originIsLoopback } from './loopback.ts'
 import { quotaAccountOf, type WorkBuddyQuotaStore } from './quota-state.ts'
 import { quotaExhaustedHint } from './quota-hint.ts'
 import type { WorkBuddyAccountStore } from './accounts-store.ts'
-import { extractDisplayErrorMessage, prepareChatBody, WorkBuddyUpstreamClient, type UpstreamErrorKind } from './upstream.ts'
+import { describeUpstreamRejection, prepareChatBody, WorkBuddyUpstreamClient, type UpstreamErrorKind } from './upstream.ts'
 
 /** Minimal logger surface the plugin context already provides. */
 export interface ShimLogger {
@@ -251,7 +251,7 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     const result = await client.chatStream(credential, prepared, controller.signal)
 
     if (!result.ok) {
-      const detail = extractDisplayErrorMessage(result.message) ?? result.message.slice(0, 400)
+      const detail = describeUpstreamRejection(result.message)
       // The host adapter classifies any error text containing a bare
       // `401`/`403` word as AUTH, which would mask business errors (safety
       // review, illegal request) behind an "invalid API key" banner. Only

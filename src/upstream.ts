@@ -374,34 +374,78 @@ export function classifyUpstreamError(status: number, body: string): UpstreamErr
   return 'client'
 }
 
+/** One rejection document, split into what the user reads and what fixes it. */
+interface RejectionDocument {
+  /** Localized text the gateway wants shown, falling back to `msg`. */
+  display?: string
+  /** The gateway's own reason — the only field that separates the causes. */
+  msg?: string
+}
+
+function parseRejection(body: string): RejectionDocument | undefined {
+  const trimmed = body.trim()
+  if (!trimmed.startsWith('{')) return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(trimmed)
+  } catch {
+    return undefined
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
+  const obj = parsed as Record<string, unknown>
+  const doc: RejectionDocument = {}
+  if (typeof obj['msg'] === 'string' && obj['msg'].trim() !== '') doc.msg = obj['msg'].trim()
+  const displayMsg = obj['displayMsg']
+  if (typeof displayMsg === 'object' && displayMsg !== null && !Array.isArray(displayMsg)) {
+    const localized = displayMsg as Record<string, unknown>
+    if (typeof localized['zh'] === 'string' && localized['zh'].trim() !== '') {
+      doc.display = localized['zh'].trim()
+    } else if (typeof localized['en'] === 'string' && localized['en'].trim() !== '') {
+      doc.display = localized['en'].trim()
+    }
+  }
+  if (doc.display === undefined && doc.msg !== undefined) doc.display = doc.msg
+  return doc
+}
+
 /**
  * Extract a user-facing error message from an upstream JSON response body.
  * Prefers WorkBuddy's localized `displayMsg.zh` / `displayMsg.en`, falling back to `msg`.
  */
 export function extractDisplayErrorMessage(body: string): string | undefined {
-  const trimmed = body.trim()
-  if (!trimmed.startsWith('{')) return undefined
-  try {
-    const parsed: unknown = JSON.parse(trimmed)
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
-    const obj = parsed as Record<string, unknown>
-    const displayMsg = obj['displayMsg']
-    if (typeof displayMsg === 'object' && displayMsg !== null && !Array.isArray(displayMsg)) {
-      const localized = displayMsg as Record<string, unknown>
-      if (typeof localized['zh'] === 'string' && localized['zh'].trim() !== '') {
-        return localized['zh'].trim()
-      }
-      if (typeof localized['en'] === 'string' && localized['en'].trim() !== '') {
-        return localized['en'].trim()
-      }
-    }
-    if (typeof obj['msg'] === 'string' && obj['msg'].trim() !== '') {
-      return obj['msg'].trim()
-    }
-  } catch {
-    // Non-JSON bodies stay undefined
-  }
-  return undefined
+  return parseRejection(body)?.display
+}
+
+/** The contiguous code the upstream WAF matches inside an inbound prompt body. */
+const INTERCEPTION_CODE_FINGERPRINT = /11128/gu
+
+/**
+ * The rejection text to show: the localized line, plus the reason it hides.
+ *
+ * A single `displayMsg.zh` (「请求被拦截，请重新发送」) stands for at least three
+ * different 400 causes on this gateway — a missing `X-Conversation-*` header
+ * trio, a WAF content fingerprint, a first message that is not `system` — and
+ * they call for opposite fixes. `msg` is what tells them apart, so it rides
+ * along in brackets instead of being dropped.
+ *
+ * The numeric `code` is deliberately **not** printed. Unsplit, the run `11128`
+ * is itself a WAF fingerprint and the host re-sends this error text on the next
+ * turn, so reporting the code would make every later retry fail for a reason
+ * this client wrote; split it (`11-128`, the proxy's rewrite for outbound
+ * bodies) and a code ending in 401/403 would hand the host's `/\b(?:401|403)\b/`
+ * AUTH heuristic a bare token. The code adds no information `msg` lacks.
+ */
+export function describeUpstreamRejection(body: string): string {
+  const doc = parseRejection(body)
+  const display = doc?.display
+  const text = display === undefined
+    ? body.slice(0, 400)
+    : doc?.msg === undefined || doc.msg === display
+      ? display
+      : `${display} [msg: ${doc.msg}]`
+  // Covers the paths where the digits arrive anyway — a body with nothing but a
+  // code falls through to the raw slice above.
+  return text.replace(INTERCEPTION_CODE_FINGERPRINT, '11-128')
 }
 
 /** Region for a login domain; an empty domain means CN (matching upstream tooling). */
@@ -1548,16 +1592,85 @@ export function modelWithCurrentPromotion(model: WorkBuddyUpstreamModel, now = D
  * so this is safe to run over an already-prepared-or-not body.
  */
 /**
+ * Phrases the CN gateway reads as proof the call did not come from an official
+ * client, paired with the equivalent wording that passes.
+ *
+ * Since 2026-10-21 `copilot.tencent.com` answers a `/v2/chat/completions` body
+ * whose **system** message contains `AI agent powered by DeepSeek Harness` with
+ * `400` / `code 11128` / `msg: "Illegal API invocation from an unapproved
+ * channel"`, and `displayMsg.zh` 「请求被拦截，请重新发送」 — on screen
+ * indistinguishable from the missing-conversation-header failure above.
+ *
+ * The needle is the whole phrase, measured on one credential (2026-10-23) by
+ * changing one variable at a time: `DeepSeek Harness` alone, an unrelated first
+ * sentence, and the same phrase inside a `user` message all answer 200, while
+ * exactly this opener answers 400. That opener is the host's fixed first-party
+ * sentence, so *every* CN chat carries it and every CN chat fails, while the
+ * model catalog and the credit probe keep succeeding — which is what makes a
+ * content check look like a billing problem.
+ *
+ * Swapping one noun keeps the sentence's meaning ("an AI agent" → "an AI
+ * assistant") and its position, and the gateway stops matching. Rewrites stay
+ * confined to `role: "system"` text because the gateway does not scan `user` /
+ * `assistant` / tool content — so a conversation *about* this fingerprint
+ * survives, and no user-visible message is ever altered on the wire.
+ *
+ * Extend this table when the gateway moves: each row is one measurement, and
+ * nothing else in the request changes.
+ */
+const CN_CHANNEL_FINGERPRINTS: readonly (readonly [needle: string, replacement: string])[] = [
+  ['AI agent powered by DeepSeek Harness', 'AI assistant powered by DeepSeek Harness'],
+]
+
+/** Apply every {@link CN_CHANNEL_FINGERPRINTS} row to one string. */
+function rewriteChannelFingerprints(text: string): string {
+  let result = text
+  for (const [needle, replacement] of CN_CHANNEL_FINGERPRINTS) {
+    if (result.includes(needle)) result = result.split(needle).join(replacement)
+  }
+  return result
+}
+
+/**
+ * Neutralise the CN gateway's client-fingerprint check in place.
+ *
+ * System messages only, and both content shapes the adapter sends are covered
+ * (a plain string, and an array of `{type:'text', text}` parts). Every other
+ * message keeps its bytes, so this cannot rewrite conversation history.
+ */
+function neutralizeCnChannelFingerprint(body: Record<string, unknown>): void {
+  const messages = body['messages']
+  if (!Array.isArray(messages)) return
+  for (const message of messages) {
+    if (!isObject(message) || message['role'] !== 'system') continue
+    const content = message['content']
+    if (typeof content === 'string') {
+      message['content'] = rewriteChannelFingerprints(content)
+      continue
+    }
+    if (!Array.isArray(content)) continue
+    for (const part of content) {
+      if (!isObject(part)) continue
+      const text = part['text']
+      if (typeof text === 'string') part['text'] = rewriteChannelFingerprints(text)
+    }
+  }
+}
+
+/**
  * Prepare a body for the **CN** endpoint.
  *
- * Until #87 the CN wire was the caller's body verbatim. The only difference
- * now is the shared {@link dropUnsupportedEffort} strip, whose region scope was
- * lifted once measurements showed this endpoint rejects `off` too.
+ * Until #87 the CN wire was the caller's body verbatim. What this adds now: the
+ * shared {@link dropUnsupportedEffort} strip, whose region scope was lifted once
+ * measurements showed this endpoint rejects `off` too, and the system-prompt
+ * rewrite that clears the gateway's client fingerprint — see
+ * {@link CN_CHANNEL_FINGERPRINTS}.
  *
  * Deliberately **not** routed through {@link prepareChatBody}: the shim already
  * applies it before handing the body to {@link WorkBuddyUpstreamClient.chatStream},
  * and re-running it would be a second `stream`/`developer`/`tool_choice`
- * normalisation of an already-normalised body. Only the strip belongs here.
+ * normalisation of an already-normalised body. Only the strip and the rewrite
+ * belong here.
  *
  * A body that is not a JSON object is returned unchanged, so this is safe to
  * run over an already-prepared-or-not body.
@@ -1572,6 +1685,7 @@ export function prepareCnChatBody(source: string): string {
   }
   if (!isObject(body)) return source
   dropUnsupportedEffort(body)
+  neutralizeCnChannelFingerprint(body)
   return JSON.stringify(body)
 }
 

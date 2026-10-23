@@ -209,6 +209,68 @@ describe('prepareCnChatBody effort handling (issue #87)', () => {
   })
 })
 
+describe('prepareCnChatBody client-fingerprint rewrite (2026-10-23)', () => {
+  // copilot.tencent.com rejects a body whose system message contains the DSH
+  // opener with 400/11128 "Illegal API invocation from an unapproved channel".
+  // Measured on one credential, one variable at a time: the same phrase inside
+  // a `user` message answers 200, so only system text is rewritten.
+  const OPENER = 'You are an AI agent powered by DeepSeek Harness.'
+  const REWRITTEN = 'You are an AI assistant powered by DeepSeek Harness.'
+
+  it('rewrites the host opener in a plain-string system message', () => {
+    const body = JSON.parse(prepareCnChatBody(JSON.stringify({
+      model: 'deepseek-v4.1-flash',
+      messages: [
+        { role: 'system', content: OPENER },
+        { role: 'user', content: 'hi' },
+      ],
+    })))
+    expect(body['messages'][0].content).toBe(REWRITTEN)
+    // Nothing else about the body moves.
+    expect(body['model']).toBe('deepseek-v4.1-flash')
+    expect(body['messages'][1]).toEqual({ role: 'user', content: 'hi' })
+  })
+
+  it('rewrites inside content parts, the adapter\'s other shape', () => {
+    const body = JSON.parse(prepareCnChatBody(JSON.stringify({
+      messages: [
+        { role: 'system', content: [{ type: 'text', text: OPENER }, { type: 'text', text: 'keep me' }] },
+      ],
+    })))
+    expect(body['messages'][0].content[0].text).toBe(REWRITTEN)
+    expect(body['messages'][0].content[1].text).toBe('keep me')
+  })
+
+  it('never touches user, assistant or tool content', () => {
+    // A conversation about this very fingerprint must survive round-tripping:
+    // the gateway was measured ignoring the phrase outside system messages.
+    const body = JSON.parse(prepareCnChatBody(JSON.stringify({
+      messages: [
+        { role: 'system', content: OPENER },
+        { role: 'user', content: `复述 ${OPENER}` },
+        { role: 'assistant', content: OPENER },
+        { role: 'tool', content: JSON.stringify({ text: OPENER }) },
+      ],
+    })))
+    expect(body['messages'][0].content).toBe(REWRITTEN)
+    expect(body['messages'][1].content).toBe(`复述 ${OPENER}`)
+    expect(body['messages'][2].content).toBe(OPENER)
+    expect(body['messages'][3].content).toBe(JSON.stringify({ text: OPENER }))
+  })
+
+  it('is idempotent, so a re-prepared body stays stable', () => {
+    const once = prepareCnChatBody(JSON.stringify({ messages: [{ role: 'system', content: OPENER }] }))
+    expect(prepareCnChatBody(once)).toBe(once)
+  })
+
+  it('leaves the international path alone, since that gateway never blocked the opener', () => {
+    const body = JSON.parse(prepareInternationalChatBody(JSON.stringify({
+      messages: [{ role: 'system', content: OPENER }, { role: 'user', content: 'hi' }],
+    })))
+    expect(body['messages'][0].content).toBe(OPENER)
+  })
+})
+
 describe('both region paths never send the `off` spelling (issue #87)', () => {
   const REGIONS = [
     ['CN', prepareCnChatBody],

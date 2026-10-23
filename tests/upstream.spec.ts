@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WorkBuddyCredential } from '../src/auth.ts'
 import { FALLBACK_WORKBUDDY_MODELS } from '../src/catalog.ts'
-import { classifyUpstreamError, extractDisplayErrorMessage, normalizeCredits, parseModelCatalog, WorkBuddyUpstreamClient } from '../src/upstream.ts'
+import { classifyUpstreamError, describeUpstreamRejection, extractDisplayErrorMessage, normalizeCredits, parseModelCatalog, WorkBuddyUpstreamClient } from '../src/upstream.ts'
 
 /**
  * Offline unit tests for WorkBuddyUpstreamClient, mocking the global `fetch`
@@ -851,6 +851,36 @@ describe('extractDisplayErrorMessage (PR #58)', () => {
     expect(extractDisplayErrorMessage('502 Bad Gateway')).toBeUndefined()
     expect(extractDisplayErrorMessage('')).toBeUndefined()
     expect(extractDisplayErrorMessage('{ invalid json')).toBeUndefined()
+  })
+})
+
+describe('describeUpstreamRejection', () => {
+  it('appends the reason a shared display line cannot express', () => {
+    const raw = JSON.stringify({
+      code: 11128,
+      msg: 'conversation id missing',
+      displayMsg: { zh: '请求被拦截，请重新发送' },
+    })
+    expect(describeUpstreamRejection(raw)).toBe('请求被拦截，请重新发送 [msg: conversation id missing]')
+  })
+
+  it('does not repeat the reason when the display text already is the msg', () => {
+    const raw = JSON.stringify({ code: 11128, msg: 'Illegal API invocation from an unapproved channel' })
+    expect(describeUpstreamRejection(raw)).toBe('Illegal API invocation from an unapproved channel')
+  })
+
+  it('prints no business code, and falls back to the raw body for a plain refusal', () => {
+    const withCodeOnly = JSON.stringify({ code: 11128, displayMsg: { zh: '请求被拦截，请重新发送' } })
+    // `11128` is an upstream WAF fingerprint: echoing it into the error the host
+    // resends next turn would fail the retry for a reason this client wrote.
+    expect(describeUpstreamRejection(withCodeOnly)).toBe('请求被拦截，请重新发送')
+    expect(describeUpstreamRejection('502 Bad Gateway')).toBe('502 Bad Gateway')
+    expect(describeUpstreamRejection('x'.repeat(600))).toHaveLength(400)
+  })
+
+  it('never lets the fingerprint digits out through the raw fallback', () => {
+    expect(describeUpstreamRejection(JSON.stringify({ code: 11128 }))).toBe('{"code":11-128}')
+    expect(describeUpstreamRejection('gateway page mentions 11128 somewhere')).toBe('gateway page mentions 11-128 somewhere')
   })
 })
 

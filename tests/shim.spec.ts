@@ -386,7 +386,7 @@ describe('error text policy against the host AUTH heuristic (PR #58)', () => {
       }),
     }))
     const body = JSON.parse(text) as { error: { message: string } }
-    expect(body.error.message).toBe('workbuddy upstream client: 内容未通过安全审核，请调整后重试。')
+    expect(body.error.message).toBe('workbuddy upstream client: 内容未通过安全审核，请调整后重试。 [msg: request illegal]')
     expect(HOST_AUTH_HEURISTIC.test(body.error.message)).toBe(false)
   })
 
@@ -399,6 +399,38 @@ describe('error text policy against the host AUTH heuristic (PR #58)', () => {
     }))
     const body = JSON.parse(text) as { error: { message: string } }
     expect(body.error.message).toBe('workbuddy upstream client (http 400): Illegal API invocation from an unapproved channel')
+  })
+
+  /**
+   * Issue #139 class: the gateway shows one localized line for several
+   * unrelated 400 causes, so the text has to carry `msg` to be actionable.
+   */
+  it('separates the causes that share the interception display line', async () => {
+    const rejectedWith = async (msg: string): Promise<string> => {
+      const text = await shimErrorBody(() => ({
+        ok: false,
+        status: 400,
+        kind: 'client',
+        message: JSON.stringify({ code: 11128, msg, displayMsg: { zh: '请求被拦截，请重新发送' } }),
+      }))
+      return (JSON.parse(text) as { error: { message: string } }).error.message
+    }
+    const causes = [
+      'conversation id missing',
+      'Illegal API invocation from an unapproved channel',
+      'first message is not system prompt',
+    ]
+    const shown = await Promise.all(causes.map(rejectedWith))
+    for (const [index, message] of shown.entries()) {
+      expect(message).toContain('请求被拦截，请重新发送')
+      expect(message).toContain(causes[index]!)
+      // The digits `11128` are themselves an upstream WAF fingerprint, and the
+      // host re-sends this text next turn: printing the code would poison every
+      // retry. `msg` distinguishes the causes on its own.
+      expect(message).not.toContain('11128')
+      expect(HOST_AUTH_HEURISTIC.test(message)).toBe(false)
+    }
+    expect(new Set(shown).size).toBe(3)
   })
 
   it('keeps the 401 note for a marked dead session', async () => {
@@ -438,7 +470,7 @@ describe('error text policy against the host AUTH heuristic (PR #58)', () => {
       message: JSON.stringify({ code: 11140, msg: 'request illegal', displayMsg: { zh: 'HTTP 403：访问受限，请稍后重试' } }),
     }))
     const body = JSON.parse(text) as { error: { message: string } }
-    expect(body.error.message).toBe('workbuddy upstream client: HTTP 403：访问受限，请稍后重试')
+    expect(body.error.message).toBe('workbuddy upstream client: HTTP 403：访问受限，请稍后重试 [msg: request illegal]')
     expect(HOST_AUTH_HEURISTIC.test(body.error.message)).toBe(true)
   })
 
