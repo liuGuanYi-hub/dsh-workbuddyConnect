@@ -210,12 +210,15 @@ describe('prepareCnChatBody effort handling (issue #87)', () => {
 })
 
 describe('prepareCnChatBody client-fingerprint rewrite (2026-10-23)', () => {
-  // copilot.tencent.com rejects a body whose system message contains the DSH
+  // copilot.tencent.com rejects a system message carrying the host's identity
   // opener with 400/11128 "Illegal API invocation from an unapproved channel".
-  // Measured on one credential, one variable at a time: the same phrase inside
-  // a `user` message answers 200, so only system text is rewritten.
+  // Measured on one credential, one variable at a time: the same words inside a
+  // `user` message answer 200, so only system text is rewritten. Rewriting just
+  // the opener's noun cleared it at 11:22 and stopped working by 11:52 — the
+  // gateway aggregates mentions — so every `DeepSeek Harness` in system text is
+  // replaced with the project's own abbreviation.
   const OPENER = 'You are an AI agent powered by DeepSeek Harness.'
-  const REWRITTEN = 'You are an AI assistant powered by DeepSeek Harness.'
+  const REWRITTEN = 'You are an AI agent powered by DSH.'
 
   it('rewrites the host opener in a plain-string system message', () => {
     const body = JSON.parse(prepareCnChatBody(JSON.stringify({
@@ -229,6 +232,23 @@ describe('prepareCnChatBody client-fingerprint rewrite (2026-10-23)', () => {
     // Nothing else about the body moves.
     expect(body['model']).toBe('deepseek-v4.1-flash')
     expect(body['messages'][1]).toEqual({ role: 'user', content: 'hi' })
+  })
+
+  it('rewrites every mention in the host prompt, not just the opener', () => {
+    // The host prompt names the runtime context and the GUI too; at 11:52 the
+    // opener alone was not enough — one identity line plus any other mention
+    // still answered 400, so all of them have to go.
+    const system = [
+      OPENER,
+      'The runtime context names the DeepSeek Harness implementation checkout.',
+      'You are interacting with the user through the DeepSeek Harness Web GUI.',
+    ].join('\n\n')
+    const body = JSON.parse(prepareCnChatBody(JSON.stringify({
+      messages: [{ role: 'system', content: system }],
+    })))
+    expect(body['messages'][0].content).not.toContain('DeepSeek Harness')
+    expect(body['messages'][0].content).toContain('You are an AI agent powered by DSH.')
+    expect(body['messages'][0].content).toContain('the DSH implementation checkout')
   })
 
   it('rewrites inside content parts, the adapter\'s other shape', () => {

@@ -13,7 +13,7 @@
 ```text
 请帮我安装并验证 DSH（DeepSeek Harness）插件 dsh-workbuddy-connect（项目地址：https://github.com/corrinehu/dsh-workbuddy-connect）：
 先阅读项目 README，确认我实际使用的界面（Web / Desktop / TUI）与 DSH 内核版本，桌面版以 App 内置核心为准，不要用独立 CLI 的版本代替；
-再按版本对应关系选择插件版本（0.2.1-rc.2 / rc.1→0.7.8-fork.3、0.2.0-rc.2→0.7.6、rc.1→0.7.0、0.1.5–0.1.7→0.6.5），优先走本机受支持的非插件市场渠道；0.2.1-rc.1 / rc.2 内核只有本 fork 的构建可用，来源是本机 tarball 而不是 npm；部分 Desktop 发行版（尤其官方 Electron 版）的 profile 由 App 管理，各发行版规则未必相同，先确认我所用的发行版，再探查其合规的安装方式，但不得绕过其校验；
+再按版本对应关系选择插件版本（0.2.1-rc.2 / rc.1→0.7.8-fork.4、0.2.0-rc.2→0.7.6、rc.1→0.7.0、0.1.5–0.1.7→0.6.5），优先走本机受支持的非插件市场渠道；0.2.1-rc.1 / rc.2 内核只有本 fork 的构建可用，来源是本机 tarball 而不是 npm；部分 Desktop 发行版（尤其官方 Electron 版）的 profile 由 App 管理，各发行版规则未必相同，先确认我所用的发行版，再探查其合规的安装方式，但不得绕过其校验；
 任何本地文件或配置改动，先征得我同意并做好备份；
 装完后验证模型选择器里出现 WorkBuddy 分组，并陪我完成一次简短对话；
 若 Desktop 安装仍因 generation 校验失败（如 @types/retry 误报），请如实报告、参照上游 dataelement/dsh-desktop#688，并建议我改用独立的 Web / TUI，不要修改依赖包或绕过校验。
@@ -23,7 +23,7 @@
 
 | DSH 内核 | 推荐插件版 |
 |---|---|
-| 0.2.1-rc.2 / rc.1 | **0.7.8-fork.3**（本 fork 的本地构建，见「版本兼容与历史版本」） |
+| 0.2.1-rc.2 / rc.1 | **0.7.8-fork.4**（本 fork 的本地构建，见「版本兼容与历史版本」） |
 | 0.2.0-rc.2 | 0.7.6（npm latest） |
 | 0.2.0-rc.1 | 0.7.0 |
 | 0.1.5 – 0.1.7 | 0.6.5 |
@@ -134,8 +134,8 @@ dsh plugin --profile web exec dsh-workbuddy-connect doctor --provider workbuddy-
 
 | DSH 内核 | 推荐插件版 | 注意事项 |
 |---|---|---|
-| `0.2.1-rc.2` | `0.7.8-fork.3`（本 fork） | 本仓库的 fork 构建：上游 0.7.8 的全部功能 + 多账号/重命名/额度检测/自动切换账号 + 国内版渠道指纹改写，依赖用 caret 放宽到 `^0.2.1-rc.1`（同时兼容 rc.1 与 rc.2）。上游 0.7.8 把 peer 精确钉在 `0.2.1-rc.2`，换一个 rc 就会判不兼容，所以本 fork 继续用放宽写法。 |
-| `0.2.1-rc.1` | `0.7.8-fork.3`（本 fork） | 同上，同一构建同时兼容 rc.1 与 rc.2。 |
+| `0.2.1-rc.2` | `0.7.8-fork.4`（本 fork） | 本仓库的 fork 构建：上游 0.7.8 的全部功能 + 多账号/重命名/额度检测/自动切换账号 + 国内版渠道指纹改写，依赖用 caret 放宽到 `^0.2.1-rc.1`（同时兼容 rc.1 与 rc.2）。上游 0.7.8 把 peer 精确钉在 `0.2.1-rc.2`，换一个 rc 就会判不兼容，所以本 fork 继续用放宽写法。 |
+| `0.2.1-rc.1` | `0.7.8-fork.4`（本 fork） | 同上，同一构建同时兼容 rc.1 与 rc.2。 |
 | `0.2.0-rc.2` | `0.7.6`（npm） | 修复企业账号模型目录缺项与国际版对话被渠道校验拦截，勿停留在有注册表回归的 0.7.2。 |
 | `0.1.5` – `0.1.7` | `0.6.5` | 旧内核最终版；0.7.0 起仅面向 0.2.0。 |
 | `0.1.2-rc.1` | `0.3.1` | 更早旧线，仅历史维护。 |
@@ -143,6 +143,7 @@ dsh plugin --profile web exec dsh-workbuddy-connect doctor --provider workbuddy-
 
 历次更新（完整记录见 [releases](https://github.com/corrinehu/dsh-workbuddy-connect/releases)）：
 
+- **0.7.8-fork.4**（本 fork）：**收紧国内版指纹改写**。fork.3 把身份句的 `AI agent` 改成 `AI assistant` 只能撑约半小时：上游在 2026-10-23 11:52 前把判定从「命中某个固定短语」改成「system 里出现多处 `DeepSeek Harness`」。实测同一份 8.6 KB 系统提示词：只改身份句仍 400，把三处 `DeepSeek Harness` 全清掉才 200；而单独一句 `DeepSeek Harness` 或 `powered by DeepSeek Harness.` 仍 200，说明是按 system 内的出现次数聚合判定，且不跨消息（历史里 15 处指纹、system 干净时仍是 200）。本版改写表改为单一规则 `DeepSeek Harness` → `DSH`（DSH 自己的提示词本来就用这个缩写），范围仍限 `role: "system"`，工具定义、历史记录、国际版路径一律不动。
 - **0.7.8-fork.3**（本 fork）：**修复国内版全部对话 400「请求被拦截，请重新发送」**。上游 `copilot.tencent.com` 自 2026-10-21 起对请求体做「官方客户端」指纹检测，命中 `AI agent powered by DeepSeek Harness` 即以 `code 11128` / `msg: Illegal API invocation from an unapproved channel` 拒绝，而这正是 DSH 内核固定的 system prompt 首句。本版在 `prepareCnChatBody` 内把该短语改写为等价句（`AI agent` → `AI assistant`），只改 `role: "system"` 文本，`user`/`assistant`/工具内容与历史记录一字不动，国际版路径不经过此改写。同时保留上一版的改进：错误文案带上游 `msg`，便于区分「缺会话头 / 内容指纹 / 首条非 system」三种同文案拦截。
 - **0.7.8-fork.2**（本 fork）：合入上游 0.7.8 并保留全部 fork 功能。上游改动：CN 目录刷新到 2026-10-17 的 19 个模型（新增 `step-5-preview`、`space-bunny`、`glm-5.3-flashx`，`minimax-m3`→`minimax-m3-pay`，`kimi-k3-1`→`kimi-k3-2`）、`glm-5.1`/`glm-5.2` 修正为不支持图片、新增「同名模型按 id 尾自动区分」（`hy3`/`hy3-x` 不再同名）、探测卡展示目录声明的档位、同义徽章去重（`独家限免`/`夜间免费` 不再叠加「免费」）。fork 保留：多账号切换与重命名、额度检测与用尽提示、每日签到、自动切换账号、卡片中英文案。
 - **0.7.8**（上游）：CN 模型目录更新至 2026-10-17；`disambiguateDisplayNames` 修复同名模型；探测卡显示目录声明档位；徽章去重。
