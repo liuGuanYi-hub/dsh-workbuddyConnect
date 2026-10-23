@@ -638,30 +638,19 @@ interface WorkBuddyPromotion {
  */
 declare function modelWithCurrentPromotion(model: WorkBuddyUpstreamModel, now?: number): WorkBuddyUpstreamModel;
 /**
- * Apply the international endpoint's extra chat requirement: the first message
- * must be a system prompt.
- *
- * The international gateway rejects a body whose first message is not `system`
- * with HTTP 400 code 11128 ("first message is not system prompt"). Note that
- * the *same* code means something else on the CN endpoint — there it reports a
- * rejected `developer` role — so the two are never branched on by code alone.
- *
- * The added prompt is deliberately empty of user content and prepended, never
- * merged: existing messages keep their order and wording. A body that is not a
- * JSON object is returned unchanged, exactly as {@link prepareChatBody} does,
- * so this is safe to run over an already-prepared-or-not body.
- */
-/**
  * Prepare a body for the **CN** endpoint.
  *
- * Until #87 the CN wire was the caller's body verbatim. The only difference
- * now is the shared {@link dropUnsupportedEffort} strip, whose region scope was
- * lifted once measurements showed this endpoint rejects `off` too.
+ * Until #87 the CN wire was the caller's body verbatim. What this adds now: the
+ * shared {@link dropUnsupportedEffort} strip, whose region scope was lifted once
+ * measurements showed this endpoint rejects `off` too, and the system-prompt
+ * rewrite that clears the gateway's client fingerprint — see
+ * {@link CN_CHANNEL_FINGERPRINTS}.
  *
  * Deliberately **not** routed through {@link prepareChatBody}: the shim already
  * applies it before handing the body to {@link WorkBuddyUpstreamClient.chatStream},
  * and re-running it would be a second `stream`/`developer`/`tool_choice`
- * normalisation of an already-normalised body. Only the strip belongs here.
+ * normalisation of an already-normalised body. Only the strip and the rewrite
+ * belong here.
  *
  * A body that is not a JSON object is returned unchanged, so this is safe to
  * run over an already-prepared-or-not body.
