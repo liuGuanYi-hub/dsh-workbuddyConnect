@@ -16,7 +16,10 @@
  */
 
 import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyCatalog } from './catalog.ts'
@@ -97,6 +100,45 @@ const KIND_STATUS: Readonly<Record<UpstreamErrorKind, number>> = {
   not_found: 502,
   server: 502,
   client: 400,
+}
+
+/**
+ * Write the exact body the upstream refused, next to the credential store.
+ *
+ * One `displayMsg.zh` covers several unrelated 400s on this gateway, and `msg`
+ * only separates the classes — neither says which sentence or which parameter
+ * tripped the check. Reconstructing a body from the host's session log has
+ * already produced one wrong conclusion (a 200-character probe passed while the
+ * real 8.6 KB prompt failed), so the refused body is kept verbatim, locally, and
+ * diffed against a working one afterwards. Unconditional on purpose: a
+ * diagnostic that must be switched on is never on when it is needed. Overwrites
+ * on every failure, and a write failure never replaces the error the caller is
+ * waiting for.
+ */
+async function dumpRefusedRequest(
+  result: { status: number, kind: UpstreamErrorKind, message: string },
+  body: string,
+  account: string | undefined,
+): Promise<void> {
+  try {
+    const dir = process.env['DSH_HOME'] ?? join(homedir(), '.dsh')
+    await mkdir(dir, { recursive: true })
+    await writeFile(
+      join(dir, 'workbuddy-last-failure.json'),
+      JSON.stringify({
+        at: new Date().toISOString(),
+        account,
+        status: result.status,
+        kind: result.kind,
+        message: result.message,
+        bodyBytes: body.length,
+        body,
+      }, null, 2),
+      'utf8',
+    )
+  } catch {
+    // Diagnostics never replace the real error.
+  }
 }
 
 function writeJson(res: ServerResponse, status: number, body: unknown): void {
@@ -252,6 +294,7 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
 
     if (!result.ok) {
       const detail = describeUpstreamRejection(result.message)
+      await dumpRefusedRequest(result, prepared, account)
       // The host adapter classifies any error text containing a bare
       // `401`/`403` word as AUTH, which would mask business errors (safety
       // review, illegal request) behind an "invalid API key" banner. Only
