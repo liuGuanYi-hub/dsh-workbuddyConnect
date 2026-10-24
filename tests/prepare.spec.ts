@@ -291,6 +291,54 @@ describe('prepareCnChatBody client-fingerprint rewrite (2026-10-23)', () => {
   })
 })
 
+describe('prepareCnChatBody oversized tool schema cap (2026-10-24)', () => {
+  // Measured: one MCP tool whose parameters serialize to 152 KB makes the model
+  // provider answer 400/11133 "Invalid request parameters" (`extError: the
+  // request parameters were rejected by the model provider`), while its siblings
+  // at 28 KB / 27 KB / 24 KB all answer 200. The cap keeps the tool but swaps the
+  // schema for a permissive object.
+  const tool = (name: string, schemaBytes: number) => ({
+    type: 'function',
+    function: {
+      name,
+      description: 'does something',
+      parameters: {
+        type: 'object',
+        properties: { blob: { type: 'string', description: 'x'.repeat(schemaBytes) } },
+      },
+    },
+  })
+
+  it('replaces an oversized parameters schema and keeps the tool', () => {
+    const body = JSON.parse(prepareCnChatBody(JSON.stringify({
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: [tool('big', 200_000), tool('small', 1_000)],
+    })))
+    expect(body['tools'][0].function.name).toBe('big')
+    expect(body['tools'][0].function.description).toBe('does something')
+    expect(JSON.stringify(body['tools'][0].function.parameters).length).toBeLessThan(500)
+    expect(body['tools'][0].function.parameters.type).toBe('object')
+    // A schema under the cap is byte-identical.
+    expect(body['tools'][1].function.parameters.properties.blob.description.length).toBe(1_000)
+  })
+
+  it('keeps a 28 KB schema, the largest size measured passing', () => {
+    const body = JSON.parse(prepareCnChatBody(JSON.stringify({
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: [tool('mid', 28_000)],
+    })))
+    expect(body['tools'][0].function.parameters.properties.blob.description.length).toBe(28_000)
+  })
+
+  it('leaves the international path untouched', () => {
+    const body = JSON.parse(prepareInternationalChatBody(JSON.stringify({
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: [tool('big', 200_000)],
+    })))
+    expect(body['tools'][0].function.parameters.properties.blob.description.length).toBe(200_000)
+  })
+})
+
 describe('both region paths never send the `off` spelling (issue #87)', () => {
   const REGIONS = [
     ['CN', prepareCnChatBody],

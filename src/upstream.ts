@@ -1667,13 +1667,68 @@ function neutralizeCnChannelFingerprint(body: Record<string, unknown>): void {
 }
 
 /**
+ * Largest per-tool parameter schema the CN path will send, in bytes.
+ *
+ * Measured on 2026-10-24 with one credential, one variable at a time: a single
+ * MCP tool whose `parameters` serialize to 152 KB makes the provider answer
+ * `code 11133` / `extError: "the request parameters were rejected by the model
+ * provider"`, while the same tool with a 10-byte schema answers 200, and its
+ * 885-character description is irrelevant (trimming it changes nothing). The
+ * next largest tools in the same roster (28 KB, 27 KB, 24 KB, 21 KB) all answer
+ * 200, so the ceiling sits between 28 KB and 152 KB and the cut is placed
+ * conservatively in that gap.
+ *
+ * The rejection is per tool, not per request: 248 tools totalling ~810 KB pass
+ * as long as no single schema is oversized, so this only rewrites the outliers.
+ */
+const CN_TOOL_SCHEMA_LIMIT_BYTES = 64 * 1024
+
+/**
+ * Replace an oversized tool schema with a permissive one, keeping the tool.
+ *
+ * Dropping the tool would hide a capability the user's session advertises, and
+ * the model would then be told it cannot do something it was offered. A
+ * free-form object keeps the name and description visible — enough for the
+ * model to attempt a call — while the provider stops rejecting the request. The
+ * description says the schema was omitted so a surprising argument shape reads
+ * as a known limitation rather than a model failure.
+ */
+function compactOversizedCnToolSchemas(body: Record<string, unknown>): void {
+  const tools = body['tools']
+  if (!Array.isArray(tools)) return
+  for (const tool of tools) {
+    if (!isObject(tool)) continue
+    // Both wire shapes are accepted here: the adapter sends
+    // `{type:'function', function:{...}}`, while an older caller shape nests
+    // the fields one level up.
+    const owner = isObject(tool['function']) ? tool['function'] : tool
+    const parameters = owner['parameters']
+    if (parameters === undefined) continue
+    let serialized: string
+    try {
+      serialized = JSON.stringify(parameters) ?? ''
+    } catch {
+      continue
+    }
+    if (serialized.length <= CN_TOOL_SCHEMA_LIMIT_BYTES) continue
+    owner['parameters'] = {
+      type: 'object',
+      additionalProperties: true,
+      description: `Parameter schema omitted (${Math.round(serialized.length / 1024)} KB exceeds this provider's limit); construct arguments from the tool description.`,
+    }
+  }
+}
+
+/**
  * Prepare a body for the **CN** endpoint.
  *
  * Until #87 the CN wire was the caller's body verbatim. What this adds now: the
  * shared {@link dropUnsupportedEffort} strip, whose region scope was lifted once
- * measurements showed this endpoint rejects `off` too, and the system-prompt
+ * measurements showed this endpoint rejects `off` too, the system-prompt
  * rewrite that clears the gateway's client fingerprint — see
- * {@link CN_CHANNEL_FINGERPRINTS}.
+ * {@link CN_CHANNEL_FINGERPRINTS} — and the per-tool schema cap that keeps the
+ * model provider from rejecting the whole request over one oversized tool
+ * definition — see {@link CN_TOOL_SCHEMA_LIMIT_BYTES}.
  *
  * Deliberately **not** routed through {@link prepareChatBody}: the shim already
  * applies it before handing the body to {@link WorkBuddyUpstreamClient.chatStream},
@@ -1695,6 +1750,7 @@ export function prepareCnChatBody(source: string): string {
   if (!isObject(body)) return source
   dropUnsupportedEffort(body)
   neutralizeCnChannelFingerprint(body)
+  compactOversizedCnToolSchemas(body)
   return JSON.stringify(body)
 }
 

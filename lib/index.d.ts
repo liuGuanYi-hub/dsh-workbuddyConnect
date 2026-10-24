@@ -642,9 +642,11 @@ declare function modelWithCurrentPromotion(model: WorkBuddyUpstreamModel, now?: 
  *
  * Until #87 the CN wire was the caller's body verbatim. What this adds now: the
  * shared {@link dropUnsupportedEffort} strip, whose region scope was lifted once
- * measurements showed this endpoint rejects `off` too, and the system-prompt
+ * measurements showed this endpoint rejects `off` too, the system-prompt
  * rewrite that clears the gateway's client fingerprint — see
- * {@link CN_CHANNEL_FINGERPRINTS}.
+ * {@link CN_CHANNEL_FINGERPRINTS} — and the per-tool schema cap that keeps the
+ * model provider from rejecting the whole request over one oversized tool
+ * definition — see {@link CN_TOOL_SCHEMA_LIMIT_BYTES}.
  *
  * Deliberately **not** routed through {@link prepareChatBody}: the shim already
  * applies it before handing the body to {@link WorkBuddyUpstreamClient.chatStream},
