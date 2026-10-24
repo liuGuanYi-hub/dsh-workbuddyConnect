@@ -339,6 +339,60 @@ describe('prepareCnChatBody oversized tool schema cap (2026-10-24)', () => {
   })
 })
 
+describe('prepareCnChatBody $ref inlining (2026-10-24)', () => {
+  // Measured: a 2.6 KB MCP tool using `$defs` + `$ref` (JSON Schema 2020-12)
+  // makes the CN model provider answer 400/11133 on its own, while inlining the
+  // references makes the same call answer 200 with the structure intact. This is
+  // a lossless rewrite, unlike the size cap in the block above.
+  const refTool = (parameters: unknown) => ({
+    type: 'function',
+    function: { name: 'ref_tool', description: 'uses $defs', parameters },
+  })
+  const addBody = (parameters: unknown) => JSON.parse(prepareCnChatBody(JSON.stringify({
+    messages: [{ role: 'user', content: 'hi' }],
+    tools: [refTool(parameters)],
+  })))
+
+  it('inlines $defs references and drops the definition table', () => {
+    const body = addBody({
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      properties: {
+        pid: { $ref: '#/$defs/pid' },
+        count: { $ref: '#/$defs/count', description: 'sibling text survives' },
+      },
+      $defs: {
+        pid: { type: 'integer', exclusiveMinimum: 0 },
+        count: { type: 'integer', default: 500 },
+      },
+    })
+    const parameters = body['tools'][0].function.parameters
+    expect(parameters.properties.pid).toEqual({ type: 'integer', exclusiveMinimum: 0 })
+    expect(parameters.properties.count).toEqual({ type: 'integer', default: 500, description: 'sibling text survives' })
+    expect('$defs' in parameters).toBe(false)
+    expect('$schema' in parameters).toBe(false)
+    expect(JSON.stringify(parameters).includes('$ref')).toBe(false)
+  })
+
+  it('degrades a cyclic reference instead of expanding forever', () => {
+    const body = addBody({
+      type: 'object',
+      properties: { node: { $ref: '#/$defs/node' } },
+      $defs: { node: { type: 'object', properties: { child: { $ref: '#/$defs/node' } } } },
+    })
+    const parameters = body['tools'][0].function.parameters
+    // The outer node inlines, the back-edge becomes a permissive object.
+    expect(parameters.properties.node.type).toBe('object')
+    expect(parameters.properties.node.properties.child).toEqual({ type: 'object', additionalProperties: true })
+  })
+
+  it('leaves a schema without $defs byte-identical', () => {
+    const plain = { type: 'object', properties: { a: { type: 'string' } }, required: ['a'] }
+    const body = addBody(plain)
+    expect(body['tools'][0].function.parameters).toEqual(plain)
+  })
+})
+
 describe('both region paths never send the `off` spelling (issue #87)', () => {
   const REGIONS = [
     ['CN', prepareCnChatBody],
