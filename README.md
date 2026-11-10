@@ -23,7 +23,7 @@
 
 | DSH 内核 | 推荐插件版 |
 |---|---|
-| 0.2.1-rc.2 / rc.1 | **0.7.8-fork.6**（本 fork 的本地构建，见「版本兼容与历史版本」） |
+| 0.2.1-rc.2 / rc.1 | **0.7.8-fork.8**（本 fork 的本地构建，见「版本兼容与历史版本」） |
 | 0.2.0-rc.2 | 0.7.6（npm latest） |
 | 0.2.0-rc.1 | 0.7.0 |
 | 0.1.5 – 0.1.7 | 0.6.5 |
@@ -144,8 +144,8 @@ dsh plugin --profile web exec dsh-workbuddy-connect doctor --provider workbuddy-
 
 | DSH 内核 | 推荐插件版 | 注意事项 |
 |---|---|---|
-| `0.2.1-rc.2` | `0.7.8-fork.6`（本 fork） | 本仓库的 fork 构建：上游 0.7.8 的全部功能 + 多账号/重命名/额度检测/自动切换账号 + 国内版渠道指纹改写，依赖用 caret 放宽到 `^0.2.1-rc.1`（同时兼容 rc.1 与 rc.2）。上游 0.7.8 把 peer 精确钉在 `0.2.1-rc.2`，换一个 rc 就会判不兼容，所以本 fork 继续用放宽写法。 |
-| `0.2.1-rc.1` | `0.7.8-fork.6`（本 fork） | 同上，同一构建同时兼容 rc.1 与 rc.2。 |
+| `0.2.1-rc.2` | `0.7.8-fork.8`（本 fork） | 本仓库的 fork 构建：上游 0.7.8 的全部功能 + 多账号/重命名/额度检测/自动切换账号 + 国内版渠道指纹改写，依赖用 caret 放宽到 `^0.2.1-rc.1`（同时兼容 rc.1 与 rc.2）。上游 0.7.8 把 peer 精确钉在 `0.2.1-rc.2`，换一个 rc 就会判不兼容，所以本 fork 继续用放宽写法。 |
+| `0.2.1-rc.1` | `0.7.8-fork.8`（本 fork） | 同上，同一构建同时兼容 rc.1 与 rc.2。 |
 | `0.2.0-rc.2` | `0.7.6`（npm） | 修复企业账号模型目录缺项与国际版对话被渠道校验拦截，勿停留在有注册表回归的 0.7.2。 |
 | `0.2.0-rc.1` | `0.7.0` | 0.7.1 起不再支持 rc.1，停在该版本即可。 |
 | `0.1.5` – `0.1.7` | `0.6.5` | 旧内核最终版；0.7.0 起仅面向 0.2.0。 |
@@ -154,6 +154,7 @@ dsh plugin --profile web exec dsh-workbuddy-connect doctor --provider workbuddy-
 
 历次更新（完整记录见 [releases](https://github.com/corrinehu/dsh-workbuddy-connect/releases)）：
 
+- **0.7.8-fork.8**（本 fork）：**修复国内版 400「请求被拦截」（code 11128）再次出现**。这次既不是请求头也不是客户端版本：实测补上官方 5.9.3 的全套网关头（`x-codebuddy-request`、`X-Request-ID`、`X-Agent-Intent`、`X-Agent-Runtime`、`X-Private-Data`、`b3`/`traceparent` 家族）仍是 400，把 UA/`X-IDE-Version` 换成真实的 `5.9.3 + CLI/2.165.0` 仍是 400；而只带 `Authorization` 的最小请求配官方措辞能拿到 200，插件的头配中性 system 也能拿到 200 —— 判定点仍在 system 文本。与 10-23 不同的是**已经没有单句 needle**：二分把失败段落缩到「`@` 提及 + `workspace root` + `the user explicitly referenced`」这一对句子，但任意去掉其中一项就恢复 200，说明网关是对多项特征累计打分、超过阈值才拦。本版把这三项特征一起改写（`@`→`at-sign`、`workspace root`→`project root`、`explicitly referenced`→`named`），保留语义、给下一次提示词变动留出余量；工具定义、历史消息、国际版路径一律不动。同时修掉一个诊断盲点：`workbuddy-last-failure.json` 过去落的是改写前的 body，看到的是已经被改写掉的指纹，现在落的是真正发出去的线上 body 并带 `region`。
 - **0.7.8-fork.6**（本 fork）：**修复国内版 kimi 等模型 400 `Invalid request parameters`（code 11133）**。抓到真实失败 body 后定位：拒收来自模型提供方（`extError: the request parameters were rejected by the model provider`），元凶是单个 MCP 工具 `mcp__rea__compare_web_captures` 的参数 schema 有 152 KB；同族 28/27/24/21 KB 的工具都正常，截短描述无效、参数换成空对象即 200。本版在 `prepareCnChatBody` 内加了单工具 schema 上限（64 KB）：超限的工具保留名字与描述、参数换成宽松对象并注明已省略，请求不再被整体拒绝。同时 fork.5 起，任何非 2xx 都会把实际发出的 body 落到 `$DSH_HOME/workbuddy-last-failure.json`，供下次同类问题直接取证据。
 - **0.7.8-fork.4**（本 fork）：**收紧国内版指纹改写**。fork.3 把身份句的 `AI agent` 改成 `AI assistant` 只能撑约半小时：上游在 2026-10-23 11:52 前把判定从「命中某个固定短语」改成「system 里出现多处 `DeepSeek Harness`」。实测同一份 8.6 KB 系统提示词：只改身份句仍 400，把三处 `DeepSeek Harness` 全清掉才 200；而单独一句 `DeepSeek Harness` 或 `powered by DeepSeek Harness.` 仍 200，说明是按 system 内的出现次数聚合判定，且不跨消息（历史里 15 处指纹、system 干净时仍是 200）。本版改写表改为单一规则 `DeepSeek Harness` → `DSH`（DSH 自己的提示词本来就用这个缩写），范围仍限 `role: "system"`，工具定义、历史记录、国际版路径一律不动。
 - **0.7.8-fork.3**（本 fork）：**修复国内版全部对话 400「请求被拦截，请重新发送」**。上游 `copilot.tencent.com` 自 2026-10-21 起对请求体做「官方客户端」指纹检测，命中 `AI agent powered by DeepSeek Harness` 即以 `code 11128` / `msg: Illegal API invocation from an unapproved channel` 拒绝，而这正是 DSH 内核固定的 system prompt 首句。本版在 `prepareCnChatBody` 内把该短语改写为等价句（`AI agent` → `AI assistant`），只改 `role: "system"` 文本，`user`/`assistant`/工具内容与历史记录一字不动，国际版路径不经过此改写。同时保留上一版的改进：错误文案带上游 `msg`，便于区分「缺会话头 / 内容指纹 / 首条非 system」三种同文案拦截。
