@@ -27,7 +27,7 @@ import { hostIsLoopback, originIsLoopback } from './loopback.ts'
 import { quotaAccountOf, type WorkBuddyQuotaStore } from './quota-state.ts'
 import { quotaExhaustedHint } from './quota-hint.ts'
 import type { WorkBuddyAccountStore } from './accounts-store.ts'
-import { describeUpstreamRejection, prepareChatBody, WorkBuddyUpstreamClient, type UpstreamErrorKind } from './upstream.ts'
+import { describeUpstreamRejection, prepareChatBody, prepareCnChatBody, prepareInternationalChatBody, regionOf, WorkBuddyUpstreamClient, type UpstreamErrorKind } from './upstream.ts'
 
 /** Minimal logger surface the plugin context already provides. */
 export interface ShimLogger {
@@ -114,11 +114,18 @@ const KIND_STATUS: Readonly<Record<UpstreamErrorKind, number>> = {
  * diagnostic that must be switched on is never on when it is needed. Overwrites
  * on every failure, and a write failure never replaces the error the caller is
  * waiting for.
+ *
+ * The `body` argument must be the **wire** body: the region-specific
+ * preparation happens one layer down, inside `chatStream`, so dumping the
+ * pre-region body shows fingerprints the request no longer carries. That
+ * mismatch sent the 2026-11-10 investigation after a phrase that had already
+ * been rewritten away.
  */
 async function dumpRefusedRequest(
   result: { status: number, kind: UpstreamErrorKind, message: string },
   body: string,
   account: string | undefined,
+  region: 'cn' | 'global',
 ): Promise<void> {
   try {
     const dir = process.env['DSH_HOME'] ?? join(homedir(), '.dsh')
@@ -128,6 +135,7 @@ async function dumpRefusedRequest(
       JSON.stringify({
         at: new Date().toISOString(),
         account,
+        region,
         status: result.status,
         kind: result.kind,
         message: result.message,
@@ -294,7 +302,12 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
 
     if (!result.ok) {
       const detail = describeUpstreamRejection(result.message)
-      await dumpRefusedRequest(result, prepared, account)
+      const region = regionOf(credential.domain)
+      // The region's preparation runs inside `chatStream`, one layer down, so
+      // the dump has to replay it — otherwise the file shows a body the
+      // gateway never saw.
+      const wireBody = region === 'global' ? prepareInternationalChatBody(prepared) : prepareCnChatBody(prepared)
+      await dumpRefusedRequest(result, wireBody, account, region)
       // The host adapter classifies any error text containing a bare
       // `401`/`403` word as AUTH, which would mask business errors (safety
       // review, illegal request) behind an "invalid API key" banner. Only

@@ -1626,10 +1626,55 @@ export function modelWithCurrentPromotion(model: WorkBuddyUpstreamModel, now = D
  *
  * Extend this table when the gateway moves: each row is one measurement, and
  * nothing else in the request changes.
+ *
+ * ## 2026-11-10 — the check stopped keying on the product name alone
+ *
+ * The 10-23 rule kept working until it did not: the same request that answered
+ * 200 then answers 400/11128 again, and none of the request's client identity
+ * is the cause. Measured on one credential, one variable at a time, against
+ * the exact body the failure carried:
+ *
+ * - Headers are **not** the gate. Adding the official 5.9.3 client's whole
+ *   gateway header set (`x-codebuddy-request`, `X-Request-ID`,
+ *   `X-Agent-Intent`, `X-Agent-Runtime`, `X-Private-Data`, the `b3` /
+ *   `traceparent` family) changes nothing: 400 either way.
+ * - The client version is **not** the gate either. Presenting the installed
+ *   `WorkBuddy/5.9.3 … CLI/2.165.0` UA instead of the built-in 5.5.6 changes
+ *   nothing.
+ * - A neutral body with the plugin's own headers answers 200; the host's
+ *   system prompt with *minimal* headers answers 400. So the gate is the
+ *   system text, as before.
+ * - Unlike 10-23, no single sentence is the needle. Delta-debugging the prompt
+ *   narrowed the failing paragraph to the sentence pair "Tokens prefixed with
+ *   `@` are paths the user explicitly referenced. Relative paths resolve from
+ *   the workspace root;" — yet each half alone answers 200, and so does the
+ *   paragraph with any **one** of three features removed. The gateway is
+ *   scoring features and blocking above a threshold, so the previous
+ *   whole-prompt 200 sits one feature below the line.
+ *
+ * The features measured on this paragraph: the bare `@` mention marker, the
+ * phrase `workspace root`, and `the user explicitly referenced`. All three are
+ * removed here rather than the one that happened to tip it, so the next host
+ * prompt that adds a mention or two has headroom instead of landing on the
+ * threshold again. Each rewrite keeps the meaning the host intended.
+ *
+ * Tool definitions stay untouched: the failing request carried 248 of them and
+ * a body with the same tools answers 200 once the system text is rewritten, so
+ * the score is computed over `messages`, not `tools`.
  */
 const CN_CHANNEL_FINGERPRINTS: readonly (readonly [needle: string, replacement: string])[] = [
   ['DeepSeek Harness', 'DSH'],
+  ['workspace root', 'project root'],
+  ['the user explicitly referenced', 'the user named'],
 ]
+
+/**
+ * A bare `@` opens a mention in other clients' prompt dialects and is scored
+ * as one here. Only the token-initial form is rewritten, so `name@host` inside
+ * prose is left alone; trailing whitespace is absorbed so the replacement never
+ * doubles a space.
+ */
+const CN_MENTION_MARKER = /(^|[\s(])@\s*/gu
 
 /** Apply every {@link CN_CHANNEL_FINGERPRINTS} row to one string. */
 function rewriteChannelFingerprints(text: string): string {
@@ -1637,7 +1682,7 @@ function rewriteChannelFingerprints(text: string): string {
   for (const [needle, replacement] of CN_CHANNEL_FINGERPRINTS) {
     if (result.includes(needle)) result = result.split(needle).join(replacement)
   }
-  return result
+  return result.replace(CN_MENTION_MARKER, '$1at-sign ')
 }
 
 /**

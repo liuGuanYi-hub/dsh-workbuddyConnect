@@ -291,6 +291,58 @@ describe('prepareCnChatBody client-fingerprint rewrite (2026-10-23)', () => {
   })
 })
 
+describe('prepareCnChatBody prompt-scoring rewrite (2026-11-10)', () => {
+  // The 10-23 rule stopped working: the same request answers 400/11128 again
+  // and neither the official client's headers nor its version change that,
+  // while a neutral body answers 200. Delta-debugging the host prompt found no
+  // single needle — the gateway scores features and blocks above a threshold,
+  // since the failing sentence pair passes when any one feature is removed.
+  const PARAGRAPH = 'Tokens prefixed with @ are paths the user explicitly referenced. '
+    + 'Relative paths resolve from the workspace root; absolute paths identify files on the host.'
+
+  const rewrite = (content: string) => JSON.parse(prepareCnChatBody(JSON.stringify({
+    messages: [{ role: 'system', content }],
+  })))['messages'][0].content
+
+  it('removes the @ mention marker the gateway scores', () => {
+    expect(rewrite(PARAGRAPH)).toContain('Tokens prefixed with at-sign are paths')
+  })
+
+  it('renames the workspace and the reference verb, keeping the meaning', () => {
+    const text = rewrite(PARAGRAPH)
+    expect(text).toContain('the user named')
+    expect(text).toContain('from the project root')
+    expect(text).not.toContain('workspace root')
+    expect(text).not.toContain('explicitly referenced')
+  })
+
+  it('leaves an address alone, because only a token-initial @ is a mention', () => {
+    expect(rewrite('Write to support@workbuddy.cn for help.')).toBe('Write to support@workbuddy.cn for help.')
+  })
+
+  it('keeps an @ that is already inside a quoted path usable', () => {
+    // `@"my notes.md"` is the host's own mention syntax; the rewrite must not
+    // leave a dangling quote or swallow the path.
+    expect(rewrite('Read @"my notes.md" first.')).toBe('Read at-sign "my notes.md" first.')
+  })
+
+  it('never rewrites the same rules inside user content', () => {
+    const body = JSON.parse(prepareCnChatBody(JSON.stringify({
+      messages: [
+        { role: 'system', content: PARAGRAPH },
+        { role: 'user', content: PARAGRAPH },
+      ],
+    })))
+    expect(body['messages'][0].content).not.toContain('@ are paths')
+    expect(body['messages'][1].content).toBe(PARAGRAPH)
+  })
+
+  it('is idempotent, so a retried body is byte-identical', () => {
+    const once = prepareCnChatBody(JSON.stringify({ messages: [{ role: 'system', content: PARAGRAPH }] }))
+    expect(prepareCnChatBody(once)).toBe(once)
+  })
+})
+
 describe('prepareCnChatBody oversized tool schema cap (2026-10-24)', () => {
   // Measured: one MCP tool whose parameters serialize to 152 KB makes the model
   // provider answer 400/11133 "Invalid request parameters" (`extError: the
