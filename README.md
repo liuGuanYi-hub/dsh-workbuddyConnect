@@ -13,7 +13,7 @@
 ```text
 请帮我安装并验证 DSH（DeepSeek Harness）插件 dsh-workbuddy-connect（项目地址：https://github.com/corrinehu/dsh-workbuddy-connect）：
 先阅读项目 README，确认我实际使用的界面（Web / Desktop / TUI）与 DSH 内核版本，桌面版以 App 内置核心为准，不要用独立 CLI 的版本代替；
-再按版本对应关系选择插件版本（0.2.1-rc.2 / rc.1→0.7.8-fork.6、0.2.0-rc.2→0.7.6、rc.1→0.7.0、0.1.5–0.1.7→0.6.5），优先走本机受支持的非插件市场渠道；0.2.1-rc.1 / rc.2 内核只有本 fork 的构建可用，来源是本机 tarball 而不是 npm；部分 Desktop 发行版（尤其官方 Electron 版）的 profile 由 App 管理，各发行版规则未必相同，先确认我所用的发行版，再探查其合规的安装方式，但不得绕过其校验；
+再按版本对应关系选择插件版本（0.2.1-rc.2 / rc.1→0.7.8-fork.8、0.2.0-rc.2→0.7.6、rc.1→0.7.0、0.1.5–0.1.7→0.6.5），优先走本机受支持的非插件市场渠道；0.2.1-rc.1 / rc.2 内核只有本 fork 的构建可用，来源是本机 tarball 而不是 npm；部分 Desktop 发行版（尤其官方 Electron 版）的 profile 由 App 管理，各发行版规则未必相同，先确认我所用的发行版，再探查其合规的安装方式，但不得绕过其校验；
 任何本地文件或配置改动，先征得我同意并做好备份；
 装完后验证模型选择器里出现 WorkBuddy 分组，并陪我完成一次简短对话；
 若 Desktop 安装仍因 generation 校验失败（如 @types/retry 误报），请如实报告、参照上游 dataelement/dsh-desktop#688，并建议我改用独立的 Web / TUI，不要修改依赖包或绕过校验。
@@ -136,6 +136,7 @@ dsh plugin --profile web exec dsh-workbuddy-connect doctor --provider workbuddy-
 - **无凭据时的行为变化**：某版 App 从未登录、也没留下插件自留副本时，该版模型分组不再显示。此前国内版会显示一份内置兜底列表，但那些模型选了必然报错。
 - **企业账号积分目前仅覆盖国内版**：国际版企业账号的计费接口尚未验证，仍按个人版接口读取；待有实测结论后再扩展。企业账号分支在本机无法自测（开发机为个人账号），依据官方 App 的接口契约实现，欢迎企业账号用户反馈实测结果。
 - **设置入口随 DSH 版本而异**：0.1.5 / 0.1.6 上插件照常安装 `authFile` / `authFileAI` 等设置分区（`settings.yaml` 与 TUI `/settings` 均可读写）；0.1.7+ / 0.2.0 的设置服务不再提供该接口，插件降级为无设置项的 provider——模型、选择器、模型显隐与上下文窗口照常工作，只是「使用上游声明的最大上下文窗口」这一偏好不再可持久化。
+- **国内版再次出现 400「请求被拦截」时先取证据**：任何非 2xx 都会把**实际发出去的线上 body**（含 `region`）落到 `$DSH_HOME/workbuddy-last-failure.json`。拿它跑 `node scripts/cn-prompt-bisect.mjs`，会对 `system` 做二分、缩出仍被拦截的最小段落，再往 `CN_CHANNEL_FINGERPRINTS` 加一行语义等价替换即可。2026-11-10 的实测表明该网关是按**多项特征累计打分**、超阈值才拦，不是固定短语——所以单点改写迟早再失效，改写表一次多留几项余量更稳。
 - 依赖 WorkBuddy 客户端接口（非官方开放 API），WorkBuddy 更新后插件可能需要随之调整。
 
 ## 版本兼容与历史版本
